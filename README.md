@@ -44,6 +44,9 @@
 - **Isolated Authentication**:
   - Add new accounts or re-authorize expired sessions inside an isolated browser environment without interrupting your current workflow.
 
+- **Bilingual Localization (English & Russian)**:
+  - Automatic system locale detection with instant in-tray language switching (`System`, `English`, `Русский`).
+
 ---
 
 ## Quick Start
