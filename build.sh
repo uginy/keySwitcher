@@ -28,7 +28,8 @@ echo "==> Compiling main.swift ($TARGET)"
 swiftc -O -swift-version 5 -target "$TARGET" \
     -o "$MACOS_DIR/KeySwitcher" \
     "$ROOT/app/main.swift" \
-    "$ROOT/app/AntigravityView.swift"
+    "$ROOT/app/AntigravityView.swift" \
+    "$ROOT/app/Localization.swift"
 
 echo "==> Compiling Antigravity Keychain helper ($TARGET)"
 # Sign with a stable Apple Development identity + fixed identifier so macOS

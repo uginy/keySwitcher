@@ -106,10 +106,13 @@ enum EngineError: Error, Sendable {
 
     var displayText: String {
         switch self {
-        case .engineMissing: return "Движок не найден"
-        case .launchFailed(let message): return "Не удалось запустить движок: \(message)"
-        case .timedOut(let seconds): return "Движок не ответил за \(seconds) с"
-        case .badOutput(let message): return "Некорректный ответ движка: \(message)"
+        case .engineMissing: return L10n.engineMissingTitle
+        case .launchFailed(let message):
+            return LanguageManager.shared.isRussian ? "Не удалось запустить движок: \(message)" : "Failed to launch engine: \(message)"
+        case .timedOut(let seconds):
+            return LanguageManager.shared.isRussian ? "Движок не ответил за \(seconds) с" : "Engine timed out after \(seconds)s"
+        case .badOutput(let message):
+            return LanguageManager.shared.isRussian ? "Некорректный ответ движка: \(message)" : "Invalid engine response: \(message)"
         }
     }
 
@@ -334,7 +337,7 @@ final class StatusController {
             case .success(let response):
                 self.state.engineMissing = false
                 self.state.statusFailed = (response.ok == false)
-                self.state.lastErrorText = (response.ok == false) ? (response.error ?? "Ошибка движка") : nil
+                self.state.lastErrorText = (response.ok == false) ? (response.error ?? (LanguageManager.shared.isRussian ? "Ошибка движка" : "Engine error")) : nil
                 self.apply(status: response)
             }
         }
@@ -361,16 +364,18 @@ final class StatusController {
                 if pendingSlot == newSlot {
                     state.lastErrorText = nil
                     let email = status.accounts?.first(where: { $0.slot == newSlot })?.email
-                    postNotificationIfEnabled("Переключено на \(email ?? "слот \(newSlot)")")
+                    postNotificationIfEnabled(L10n.switchedTo(email: email ?? (LanguageManager.shared.isRussian ? "слот \(newSlot)" : "slot \(newSlot)")))
                 } else {
-                    state.lastErrorText = "Переключение на слот \(pendingSlot) не подтвердилось"
+                    state.lastErrorText = LanguageManager.shared.isRussian
+                        ? "Переключение на слот \(pendingSlot) не подтвердилось"
+                        : "Switch to slot \(pendingSlot) was not confirmed"
                 }
             } else if let previousSlot = lastKnownSlot,
                       previousSlot != newSlot,
                       Date() > suppressExternalChangeUntil {
                 // External change (e.g. the reactive daemon rotated the account).
                 let email = status.accounts?.first(where: { $0.slot == newSlot })?.email
-                postNotificationIfEnabled("Аккаунт сменён на \(email ?? "слот \(newSlot)")")
+                postNotificationIfEnabled(L10n.switchedTo(email: email ?? (LanguageManager.shared.isRussian ? "слот \(newSlot)" : "slot \(newSlot)")))
             }
             lastKnownSlot = newSlot
         }
@@ -397,16 +402,18 @@ final class StatusController {
                     // auth.json is swapped early in rotator.py, so the switch likely
                     // already succeeded — verify via the forced refresh below.
                     self.pendingTimedOutSwitchSlot = slot
-                    self.state.lastErrorText = "Переключение затянулось — проверяю результат…"
+                    self.state.lastErrorText = LanguageManager.shared.isRussian
+                        ? "Переключение затянулось — проверяю результат…"
+                        : "Switching is taking longer — verifying..."
                 } else {
                     self.state.lastErrorText = error.displayText
                 }
             case .success(let response):
                 if response.ok == true {
-                    let suffix = restartCodex ? "" : " без рестарта"
-                    self.postNotificationIfEnabled("Переключено на \(response.email ?? "слот \(slot)")\(suffix)")
+                    let emailText = response.email ?? (LanguageManager.shared.isRussian ? "слот \(slot)" : "slot \(slot)")
+                    self.postNotificationIfEnabled(L10n.switchedTo(email: emailText, withoutRestart: !restartCodex))
                 } else {
-                    self.state.lastErrorText = response.error ?? "Не удалось переключить аккаунт"
+                    self.state.lastErrorText = response.error ?? L10n.failedToSwitch
                 }
             }
             self.refreshStatus()
@@ -430,13 +437,14 @@ final class StatusController {
             case .failure(let error):
                 self.state.engineMissing = error.isEngineMissing
                 self.state.lastErrorText = error.isTimedOut
-                    ? "Вход не завершён вовремя — попробуйте ещё раз"
+                    ? L10n.loginTimedOut
                     : error.displayText
             case .success(let response):
                 if response.ok == true {
-                    self.postNotificationIfEnabled("Авторизация обновлена: \(response.email ?? "слот \(slot)")")
+                    let emailText = response.email ?? (LanguageManager.shared.isRussian ? "слот \(slot)" : "slot \(slot)")
+                    self.postNotificationIfEnabled(LanguageManager.shared.isRussian ? "Авторизация обновлена: \(emailText)" : "Authorization updated: \(emailText)")
                 } else {
-                    self.state.lastErrorText = response.error ?? "Не удалось обновить авторизацию"
+                    self.state.lastErrorText = response.error ?? L10n.failedToUpdateAuth
                 }
             }
             self.refreshStatus()
@@ -494,13 +502,14 @@ final class StatusController {
             case .failure(let error):
                 self.state.engineMissing = error.isEngineMissing
                 self.state.lastErrorText = error.isTimedOut
-                    ? "Добавление не завершено вовремя — попробуйте ещё раз"
+                    ? L10n.loginTimedOut
                     : error.displayText
             case .success(let response):
                 if response.ok == true {
-                    self.postNotificationIfEnabled("Добавлен новый аккаунт: \(response.email ?? "слот \(response.slot ?? 0)")")
+                    let emailText = response.email ?? (LanguageManager.shared.isRussian ? "слот \(response.slot ?? 0)" : "slot \(response.slot ?? 0)")
+                    self.postNotificationIfEnabled(L10n.addedAccount(email: emailText))
                 } else {
-                    self.state.lastErrorText = response.error ?? "Не удалось добавить аккаунт"
+                    self.state.lastErrorText = response.error ?? L10n.failedToAddAccount
                 }
             }
             self.refreshStatus()
@@ -531,9 +540,10 @@ final class StatusController {
                 self.state.lastErrorText = error.displayText
             case .success(let response):
                 if response.ok == true {
-                    self.postNotificationIfEnabled("Аккаунт \(email ?? "слот \(slot)") успешно удалён")
+                    let emailText = email ?? (LanguageManager.shared.isRussian ? "слот \(slot)" : "slot \(slot)")
+                    self.postNotificationIfEnabled(L10n.deletedAccount(email: emailText))
                 } else {
-                    self.state.lastErrorText = response.error ?? "Не удалось удалить аккаунт"
+                    self.state.lastErrorText = response.error ?? L10n.failedToDeleteAccount
                 }
             }
             self.refreshStatus()
@@ -627,24 +637,11 @@ final class AuthFileWatcher {
 // MARK: - Time formatting helpers
 
 func formatResetInterval(secondsFromNow seconds: Int) -> String {
-    if seconds <= 0 { return "сброс скоро" }
-    let days = seconds / 86400
-    let hours = (seconds % 86400) / 3600
-    let minutes = (seconds % 3600) / 60
-    var parts: [String] = []
-    if days > 0 { parts.append("\(days) д") }
-    if hours > 0 { parts.append("\(hours) ч") }
-    if minutes > 0 { parts.append("\(minutes) мин") }
-    if parts.isEmpty { return "сброс меньше чем через минуту" }
-    return "сброс через " + parts.joined(separator: " ")
+    L10n.resetInterval(secondsFromNow: seconds)
 }
 
 func formatResetClock(timestamp: Int) -> String {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "ru_RU")
-    let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
-    formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "EEE HH:mm"
-    return formatter.string(from: date)
+    L10n.resetClock(timestamp: timestamp)
 }
 
 func clampedPercent(_ value: Double?) -> Double {
@@ -659,7 +656,7 @@ func shortAccountName(email: String?, slot: Int?) -> String {
     guard let email,
           let local = email.split(separator: "@", maxSplits: 1).first,
           !local.isEmpty else {
-        return slot.map { "слот\($0)" } ?? "KS"
+        return slot.map { LanguageManager.shared.isRussian ? "слот\($0)" : "slot\($0)" } ?? "KS"
     }
     // First and last character of the local-part (before @).
     if local.count == 1 {
@@ -970,8 +967,8 @@ struct AccountCardView: View {
                         .onChanged(onDragChanged)
                         .onEnded { _ in onDragEnded() }
                 )
-                .accessibilityLabel("Изменить порядок аккаунта")
-                .accessibilityHint("Перетащите вверх или вниз")
+                .accessibilityLabel(L10n.reorderAccount)
+                .accessibilityHint(L10n.dragHint)
             if isActive {
                 Circle()
                     .fill(Color.green)
@@ -1003,7 +1000,7 @@ struct AccountCardView: View {
                         isEmailRevealed.toggle()
                     }
                 }
-                .help(isEmailRevealed ? "Нажмите, чтобы скрыть полный email" : "Нажмите, чтобы показать полный email")
+                .help(isEmailRevealed ? L10n.hideFullEmail : L10n.showFullEmail)
             if let plan = account.plan, !plan.isEmpty {
                 Text(plan.capitalized)
                     .font(.caption2)
@@ -1014,7 +1011,7 @@ struct AccountCardView: View {
             }
             Spacer(minLength: 4)
             if isActive {
-                Text("Активен")
+                Text(L10n.active)
                     .font(.caption)
                     .foregroundColor(.green)
             }
@@ -1028,7 +1025,7 @@ struct AccountCardView: View {
             if isReloginingThis {
                 HStack(spacing: 4) {
                     ProgressView().controlSize(.small)
-                    Text("Открываю вход…")
+                    Text(L10n.openingLogin)
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -1037,7 +1034,7 @@ struct AccountCardView: View {
                     .controlSize(.small)
             } else if needsLogin {
                 Button(action: onRelogin) {
-                    Label("Войти", systemImage: "person.crop.circle.badge.plus")
+                    Label(L10n.logIn, systemImage: "person.crop.circle.badge.plus")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
@@ -1051,11 +1048,11 @@ struct AccountCardView: View {
                     Menu {
                         if !isActive && !needsLogin {
                             Button(action: onSwitchWithRestart) {
-                                Label("Переключить", systemImage: "arrow.triangle.2.circlepath")
+                                Label(L10n.switchAction, systemImage: "arrow.triangle.2.circlepath")
                             }
                             Divider()
                         }
-                        Button("Удалить аккаунт", role: .destructive, action: onDelete)
+                        Button(L10n.deleteAccount, role: .destructive, action: onDelete)
                     } label: {
                         HoverIcon(systemName: "ellipsis", isHovered: isActionsHovered)
                     }
@@ -1063,7 +1060,7 @@ struct AccountCardView: View {
                     .menuIndicator(.hidden)
                     .controlSize(.small)
                     .disabled(buttonsDisabled)
-                    .accessibilityLabel("Действия аккаунта")
+                    .accessibilityLabel(L10n.accountActions)
                     .nonFocusable()
                 }
                 .contentShape(Rectangle())
@@ -1081,10 +1078,10 @@ struct AccountCardView: View {
             let windows = menuUsageWindows(usage)
             VStack(alignment: .leading, spacing: 4) {
                 if let primary = windows.short {
-                    UsageBarRow(label: "5 ч", window: primary, stale: usage.stale ?? false)
+                    UsageBarRow(label: L10n.fiveHours, window: primary, stale: usage.stale ?? false)
                 }
                 if let secondary = windows.weekly {
-                    UsageBarRow(label: "Неделя", window: secondary, stale: usage.stale ?? false)
+                    UsageBarRow(label: L10n.week, window: secondary, stale: usage.stale ?? false)
                 }
                 if windows.short == nil && windows.weekly == nil {
                     noDataText
@@ -1098,7 +1095,7 @@ struct AccountCardView: View {
     @ViewBuilder
     private var errorRow: some View {
         if errorKind == "auth_expired" {
-            Text("сессия завершена — нужен повторный вход")
+            Text(L10n.sessionExpired)
                 .font(.caption)
                 .foregroundColor(.red)
         } else {
@@ -1107,7 +1104,7 @@ struct AccountCardView: View {
     }
 
     private var noDataText: some View {
-        Text("нет данных")
+        Text(L10n.noData)
             .font(.caption)
             .foregroundColor(.secondary)
     }
@@ -1151,6 +1148,7 @@ struct PanelView: View {
     @ObservedObject var state: AppState
     let controller: StatusController
     @ObservedObject var antigravityController: AntigravityController
+    @ObservedObject private var languageManager = LanguageManager.shared
     @State private var refreshCooldown = false
     @State private var isAddHovered = false
     @State private var isRefreshHovered = false
@@ -1185,25 +1183,25 @@ struct PanelView: View {
         }
         .padding(12)
         .frame(width: 580)
-        .alert("Удалить аккаунт?", isPresented: Binding(
+        .alert(L10n.deleteAccountTitle, isPresented: Binding(
             get: { slotToDelete != nil },
             set: { if !$0 { slotToDelete = nil } }
         )) {
             if let slot = slotToDelete {
-                Button("Удалить", role: .destructive) {
+                Button(L10n.delete, role: .destructive) {
                     controller.deleteSlot(slot: slot.slot, email: slot.email)
                     slotToDelete = nil
                 }
-                Button("Отмена", role: .cancel) {
+                Button(L10n.cancel, role: .cancel) {
                     slotToDelete = nil
                 }
             }
         } message: {
             if let slot = slotToDelete {
                 if slot.active == true {
-                    Text("Это активный аккаунт \(slot.email ?? "слот \(slot.slot)"). Удаление разлогинит Codex (будет удалён ~/.codex/auth.json). Продолжить?")
+                    Text(L10n.deleteCodexActiveMessage(email: slot.email ?? (LanguageManager.shared.isRussian ? "слот \(slot.slot)" : "slot \(slot.slot)")))
                 } else {
-                    Text("Удалить аккаунт \(slot.email ?? "слот \(slot.slot)") из KeySwitcher?")
+                    Text(L10n.deleteCodexSlotMessage(email: slot.email ?? (LanguageManager.shared.isRussian ? "слот \(slot.slot)" : "slot \(slot.slot)")))
                 }
             }
         }
@@ -1221,10 +1219,28 @@ struct PanelView: View {
                         get: { state.loginItemEnabled },
                         set: { controller.setLoginItem($0) }
                     )) {
-                        Text("Запускать при входе")
+                        Text(L10n.launchAtLogin)
                     }
+
+                    Menu {
+                        ForEach(AppLanguage.allCases) { lang in
+                            Button {
+                                languageManager.language = lang
+                            } label: {
+                                HStack {
+                                    Text(lang.displayName)
+                                    if languageManager.language == lang {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Text(L10n.languageMenu)
+                    }
+
                     Divider()
-                    Button("Выйти", role: .destructive) {
+                    Button(L10n.quit, role: .destructive) {
                         NSApp.terminate(nil)
                     }
                 } label: {
@@ -1233,7 +1249,7 @@ struct PanelView: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .controlSize(.small)
-                .accessibilityLabel("Настройки приложения")
+                .accessibilityLabel(L10n.settings)
                 .nonFocusable()
             }
             .contentShape(Rectangle())
@@ -1263,7 +1279,7 @@ struct PanelView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("Codex KeySwitcher")
+            Text(L10n.codexHeader)
                 .font(.headline)
             Spacer()
             Button(action: { controller.addAccount() }) {
@@ -1271,7 +1287,7 @@ struct PanelView: View {
             }
             .buttonStyle(.borderless)
             .disabled(state.isSwitching || state.isAdding)
-            .accessibilityLabel("Добавить аккаунт")
+            .accessibilityLabel(L10n.addAccount)
             .onHover { isAddHovered = $0 }
             .nonFocusable()
             Button {
@@ -1285,6 +1301,7 @@ struct PanelView: View {
             }
             .buttonStyle(.borderless)
             .disabled(refreshDisabled)
+            .accessibilityLabel(L10n.refresh)
             .onHover { isRefreshHovered = $0 }
             .nonFocusable()
         }
@@ -1296,10 +1313,10 @@ struct PanelView: View {
     private var content: some View {
         if state.engineMissing {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Движок не найден")
+                Text(L10n.engineMissingTitle)
                     .font(.callout)
                     .foregroundColor(.secondary)
-                Text("Ожидается keyswitcher.py в Resources приложения")
+                Text(L10n.engineMissingSubtitle)
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -1345,10 +1362,10 @@ struct PanelView: View {
                         .overlay(alignment: dropIndicatorAlignment) {
                             dropIndicator(for: account.slot)
                         }
-                        .accessibilityAction(named: Text("Переместить выше")) {
+                        .accessibilityAction(named: Text(L10n.moveUp)) {
                             moveAccount(account.slot, by: -1, accounts: accounts)
                         }
-                        .accessibilityAction(named: Text("Переместить ниже")) {
+                        .accessibilityAction(named: Text(L10n.moveDown)) {
                             moveAccount(account.slot, by: 1, accounts: accounts)
                         }
                     }
@@ -1366,13 +1383,13 @@ struct PanelView: View {
                 }
             }
         } else if state.isLoading {
-            Text("Загрузка…")
+            Text(L10n.loading)
                 .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.vertical, 12)
         } else {
             VStack(spacing: 12) {
-                Text(state.lastErrorText ?? "Нет данных")
+                Text(state.lastErrorText ?? L10n.noData)
                     .font(.callout)
                     .foregroundColor(.secondary)
                 addAccountProgress
@@ -1389,11 +1406,11 @@ struct PanelView: View {
         if state.isAdding {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Авторизация в браузере...")
+                Text(L10n.signingInBrowser)
                     .font(.callout)
                     .foregroundColor(.secondary)
                 Spacer()
-                Button("Отмена") {
+                Button(L10n.cancel) {
                     controller.cancelAddAccount()
                 }
                 .buttonStyle(.bordered)
@@ -1531,6 +1548,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
     private var statusTimer: Timer?
     private var stateSubscription: AnyCancellable?
     private var antigravitySubscription: AnyCancellable?
+    private var languageSubscription: AnyCancellable?
     private var antigravityNotificationObserver: NSObjectProtocol?
 
     // MARK: Lifecycle
@@ -1603,6 +1621,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
                 DispatchQueue.main.async { self?.updateStatusItem() }
             }
         antigravitySubscription = antigravityController.$status
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateStatusItem()
+            }
+        languageSubscription = LanguageManager.shared.$language
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.updateStatusItem()

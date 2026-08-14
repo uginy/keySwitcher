@@ -105,7 +105,7 @@ final class AntigravityController: ObservableObject {
                 self.pollLogin(target: target, generation: generation)
             case .success(let response):
                 self.addingTarget = nil
-                self.finishWithError(response.error ?? "Не удалось начать вход")
+                self.finishWithError(response.error ?? L10n.failedToCancelLogin)
             case .failure(let error):
                 self.addingTarget = nil
                 self.finishWithError(error.displayText)
@@ -122,9 +122,9 @@ final class AntigravityController: ObservableObject {
             switch result {
             case .success(let response) where response.ok == true:
                 self.addingTarget = nil
-                self.loadStatus(message: "Вход отменён")
+                self.loadStatus(message: L10n.loginCanceled)
             case .success(let response):
-                self.finishWithError(response.error ?? "Не удалось отменить вход")
+                self.finishWithError(response.error ?? L10n.failedToCancelLogin)
             case .failure(let error):
                 self.finishWithError(error.displayText)
             }
@@ -132,12 +132,12 @@ final class AntigravityController: ObservableObject {
     }
 
     func switchTo(profileID: String, target: String = "all") {
-        let msg = target == "all" ? "Аккаунт переключён везде" : "Аккаунт переключён"
+        let msg = target == "all" ? L10n.switchEverywhereSuccess : L10n.switchSuccess
         run(["antigravity", "switch", profileID, target], success: msg)
     }
 
     func remove(profileID: String, target: String = "all") {
-        run(["antigravity", "remove", profileID, target], success: "Аккаунт удалён из свитчера")
+        run(["antigravity", "remove", profileID, target], success: L10n.removeSuccess)
     }
 
     func reorder(profileIDs: [String], target: String = "all") {
@@ -158,7 +158,7 @@ final class AntigravityController: ObservableObject {
             case .success(let response):
                 self.order["cli"] = previousCli
                 self.order["ide"] = previousIde
-                self.finishWithError(response.error ?? "Не удалось сохранить порядок")
+                self.finishWithError(response.error ?? L10n.failedToSaveOrder)
             case .failure(let error):
                 self.order["cli"] = previousCli
                 self.order["ide"] = previousIde
@@ -177,7 +177,7 @@ final class AntigravityController: ObservableObject {
             case .success(let response) where response.ok == true:
                 self.loadStatus(message: success)
             case .success(let response):
-                self.finishWithError(response.error ?? "Операция не выполнена")
+                self.finishWithError(response.error ?? L10n.operationFailed)
             case .failure(let error):
                 self.finishWithError(error.displayText)
             }
@@ -209,7 +209,7 @@ final class AntigravityController: ObservableObject {
                     self.pollLogin(target: target, generation: generation)
                 }
             case .success(let response):
-                self.finishWithError(response.error ?? "Не удалось загрузить аккаунты")
+                self.finishWithError(response.error ?? L10n.failedToLoadAccounts)
             case .failure(let error):
                 self.finishWithError(error.displayText)
             }
@@ -235,10 +235,10 @@ final class AntigravityController: ObservableObject {
                     self.pollLogin(target: target, generation: generation)
                 case .success(let response) where response.ok == true:
                     self.addingTarget = nil
-                    self.loadStatus(message: "Новый аккаунт сохранён")
+                    self.loadStatus(message: L10n.newAccountSaved)
                 case .success(let response):
                     self.addingTarget = nil
-                    self.finishWithError(response.error ?? "Не удалось завершить вход")
+                    self.finishWithError(response.error ?? L10n.failedToCompleteLogin)
                 case .failure(let error):
                     self.addingTarget = nil
                     self.finishWithError(error.displayText)
@@ -248,15 +248,30 @@ final class AntigravityController: ObservableObject {
     }
 }
 
+// MARK: - Views
+
+private struct AntigravityRemoval {
+    let profileID: String
+}
+
+private struct AntigravityFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 struct AntigravityPanelView: View {
     @ObservedObject var controller: AntigravityController
+    @ObservedObject private var languageManager = LanguageManager.shared
     @State private var isAddHovered = false
     @State private var isRefreshHovered = false
-    @State private var removal: AntigravityRemoval?
-    @State private var draggedProfileID: String?
+    @State private var removal: AntigravityRemoval? = nil
+    @State private var draggedProfileID: String? = nil
     @State private var dragOffset: CGFloat = 0
-    @State private var dropTargetProfileID: String?
-    @State private var dropTargetEdge: VerticalEdge?
+    @State private var dropTargetID: String? = nil
+    @State private var dropTargetEdge: VerticalEdge? = nil
     @State private var profileFrames: [String: CGRect] = [:]
 
     var body: some View {
@@ -276,25 +291,25 @@ struct AntigravityPanelView: View {
         .onReceive(NotificationCenter.default.publisher(for: .antigravityAccountsDidChange)) { _ in
             controller.refreshIfNeeded(minInterval: 2, silent: true)
         }
-        .alert("Удалить аккаунт из свитчера?", isPresented: Binding(
+        .alert(L10n.removeAccountTitle, isPresented: Binding(
             get: { removal != nil },
             set: { if !$0 { removal = nil } }
         )) {
             if let removal {
-                Button("Удалить", role: .destructive) {
+                Button(L10n.delete, role: .destructive) {
                     controller.remove(profileID: removal.profileID, target: "all")
                     self.removal = nil
                 }
-                Button("Отмена", role: .cancel) { self.removal = nil }
+                Button(L10n.cancel, role: .cancel) { self.removal = nil }
             }
         } message: {
-            Text("Текущая сессия в Antigravity останется активной. Удалится только сохранённая копия из KeySwitcher.")
+            Text(L10n.removeAntigravityMessage)
         }
     }
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("Antigravity KeySwitcher")
+            Text(L10n.antigravityHeader)
                 .font(.headline)
             Spacer()
             Button {
@@ -304,7 +319,7 @@ struct AntigravityPanelView: View {
             }
             .buttonStyle(.borderless)
             .disabled(controller.isLoading || controller.addingTarget != nil)
-            .accessibilityLabel("Добавить аккаунт")
+            .accessibilityLabel(L10n.addAccount)
             .onHover { isAddHovered = $0 }
             .nonFocusable()
             Button {
@@ -318,7 +333,7 @@ struct AntigravityPanelView: View {
             }
             .buttonStyle(.borderless)
             .disabled(controller.isLoading || controller.addingTarget != nil)
-            .accessibilityLabel("Обновить")
+            .accessibilityLabel(L10n.refresh)
             .onHover { isRefreshHovered = $0 }
             .nonFocusable()
         }
@@ -329,11 +344,11 @@ struct AntigravityPanelView: View {
         if controller.addingTarget != nil {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Вход в Google Antigravity…")
+                Text(L10n.signingInAntigravity)
                     .font(.callout)
                     .foregroundColor(.secondary)
                 Spacer()
-                Button("Отмена") {
+                Button(L10n.cancel) {
                     controller.cancelLogin()
                 }
                 .buttonStyle(.bordered)
@@ -353,16 +368,16 @@ struct AntigravityPanelView: View {
             }
             .frame(maxHeight: 320)
         } else if controller.isLoading {
-            Text("Загрузка…")
+            Text(L10n.loading)
                 .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.vertical, 12)
         } else {
             VStack(spacing: 4) {
-                Text("Сохранённых аккаунтов пока нет")
+                Text(L10n.noSavedAccounts)
                     .font(.callout)
                     .foregroundColor(.secondary)
-                Text("Добавьте аккаунт через +")
+                Text(L10n.addAccountViaPlus)
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -372,42 +387,26 @@ struct AntigravityPanelView: View {
     }
 
     private func profilesList(_ profiles: [AntigravityProfile]) -> some View {
-        let targetProfiles = orderedProfiles(profiles)
-        return VStack(alignment: .leading, spacing: 6) {
-            ForEach(targetProfiles) { profile in
-                let isCliActive = controller.status?.active?["cli"] == profile.id
-                let isIdeActive = controller.status?.active?["ide"] == profile.id
+        let ordered = orderedProfiles(profiles)
+        return VStack(spacing: 8) {
+            ForEach(ordered) { profile in
                 AntigravityAccountCard(
                     profile: profile,
-                    isCliActive: isCliActive,
-                    isIdeActive: isIdeActive,
-                    isLoading: controller.isLoading || controller.addingTarget != nil,
-                    onSwitchAll: {
-                        controller.switchTo(profileID: profile.id, target: "all")
-                    },
-                    onSwitchCli: {
-                        controller.switchTo(profileID: profile.id, target: "cli")
-                    },
-                    onSwitchIde: {
-                        controller.switchTo(profileID: profile.id, target: "ide")
-                    },
-                    onRemove: {
-                        removal = AntigravityRemoval(profileID: profile.id)
-                    },
-                    onDragChanged: {
-                        updateDrag($0, profileID: profile.id, profiles: targetProfiles)
-                    },
-                    onDragEnded: {
-                        finishDrag(profileID: profile.id, profiles: targetProfiles)
-                    }
+                    isCliActive: controller.status?.active?["cli"] == profile.id,
+                    isIdeActive: controller.status?.active?["ide"] == profile.id,
+                    isLoading: controller.isLoading,
+                    onSwitchAll: { controller.switchTo(profileID: profile.id, target: "all") },
+                    onSwitchCli: { controller.switchTo(profileID: profile.id, target: "cli") },
+                    onSwitchIde: { controller.switchTo(profileID: profile.id, target: "ide") },
+                    onRemove: { removal = AntigravityRemoval(profileID: profile.id) },
+                    onDragChanged: { updateDrag($0, profileID: profile.id, profiles: ordered) },
+                    onDragEnded: { finishDrag(profileID: profile.id, profiles: ordered) }
                 )
                 .background {
                     GeometryReader { geometry in
                         Color.clear.preference(
-                            key: AntigravityProfileFramePreferenceKey.self,
-                            value: [
-                                profile.id: geometry.frame(in: .named("antigravityAccountList"))
-                            ]
+                            key: AntigravityFramePreferenceKey.self,
+                            value: [profile.id: geometry.frame(in: .named("antigravityAccountList"))]
                         )
                     }
                 }
@@ -422,27 +421,20 @@ struct AntigravityPanelView: View {
                 .overlay(alignment: dropIndicatorAlignment) {
                     dropIndicator(for: profile.id)
                 }
-                .accessibilityAction(named: Text("Переместить выше")) {
-                    moveProfile(profile.id, by: -1, profiles: targetProfiles)
+                .accessibilityAction(named: Text(L10n.moveUp)) {
+                    moveProfile(profile.id, by: -1, profiles: ordered)
                 }
-                .accessibilityAction(named: Text("Переместить ниже")) {
-                    moveProfile(profile.id, by: 1, profiles: targetProfiles)
+                .accessibilityAction(named: Text(L10n.moveDown)) {
+                    moveProfile(profile.id, by: 1, profiles: ordered)
                 }
             }
         }
         .coordinateSpace(name: "antigravityAccountList")
-        .onPreferenceChange(AntigravityProfileFramePreferenceKey.self) { frames in
+        .onPreferenceChange(AntigravityFramePreferenceKey.self) { frames in
             if draggedProfileID == nil {
                 profileFrames = frames
             }
         }
-    }
-
-    private func orderedProfiles(_ profiles: [AntigravityProfile]) -> [AntigravityProfile] {
-        let byID = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
-        let saved = (controller.order["cli"] ?? controller.order["ide"] ?? []).filter { byID[$0] != nil }
-        let normalized = saved + profiles.map(\.id).filter { !saved.contains($0) }
-        return normalized.compactMap { byID[$0] }
     }
 
     private var dropIndicatorAlignment: Alignment {
@@ -451,97 +443,102 @@ struct AntigravityPanelView: View {
 
     @ViewBuilder
     private func dropIndicator(for profileID: String) -> some View {
-        if dropTargetProfileID == profileID && draggedProfileID != profileID {
-            Capsule()
+        if dropTargetID == profileID, let edge = dropTargetEdge {
+            Rectangle()
                 .fill(Color.accentColor)
-                .frame(height: 3)
-                .padding(.horizontal, 8)
-                .offset(y: dropTargetEdge == .bottom ? 5 : -5)
+                .frame(height: 2)
+                .padding(.horizontal, 4)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: edge == .top ? .top : .bottom)
+                .allowsHitTesting(false)
         }
+    }
+
+    private func orderedProfiles(_ profiles: [AntigravityProfile]) -> [AntigravityProfile] {
+        let currentOrder = controller.order["cli"] ?? []
+        guard !currentOrder.isEmpty else { return profiles }
+        var map = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
+        var ordered: [AntigravityProfile] = []
+        for id in currentOrder {
+            if let p = map.removeValue(forKey: id) {
+                ordered.append(p)
+            }
+        }
+        ordered.append(contentsOf: map.values)
+        return ordered
     }
 
     private func updateDrag(
-        _ gesture: DragGesture.Value,
+        _ value: DragGesture.Value,
         profileID: String,
         profiles: [AntigravityProfile]
     ) {
-        if draggedProfileID != profileID {
-            withAnimation(.easeOut(duration: 0.12)) {
-                draggedProfileID = profileID
+        guard draggedProfileID == nil || draggedProfileID == profileID else { return }
+        draggedProfileID = profileID
+        dragOffset = value.translation.height
+
+        guard let currentFrame = profileFrames[profileID] else { return }
+        let currentMidY = currentFrame.midY + dragOffset
+        var nearestID: String? = nil
+        var nearestDistance: CGFloat = .infinity
+        var edge: VerticalEdge = .top
+
+        for (id, frame) in profileFrames where id != profileID {
+            let distance = abs(frame.midY - currentMidY)
+            if distance < nearestDistance {
+                nearestDistance = distance
+                nearestID = id
+                edge = currentMidY < frame.midY ? .top : .bottom
             }
         }
-        NSCursor.closedHand.set()
-        dragOffset = gesture.translation.height
 
-        let targetID = profileFrames.min {
-            abs($0.value.midY - gesture.location.y) < abs($1.value.midY - gesture.location.y)
-        }?.key
-        guard targetID != dropTargetProfileID else { return }
-        dropTargetProfileID = targetID
+        dropTargetID = nearestID
+        dropTargetEdge = edge
+    }
 
-        if let targetID,
-           targetID != profileID,
-           let fromIndex = profiles.firstIndex(where: { $0.id == profileID }),
-           let targetIndex = profiles.firstIndex(where: { $0.id == targetID }) {
-            dropTargetEdge = targetIndex > fromIndex ? .bottom : .top
-            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-        } else {
+    private func finishDrag(profileID: String, profiles: [AntigravityProfile]) {
+        guard draggedProfileID == profileID else { return }
+        let targetID = dropTargetID
+        let targetEdge = dropTargetEdge
+
+        withAnimation(.easeOut(duration: 0.15)) {
+            draggedProfileID = nil
+            dragOffset = 0
+            dropTargetID = nil
             dropTargetEdge = nil
         }
+
+        guard let targetID, targetID != profileID else { return }
+        var ids = profiles.map(\.id)
+        guard let sourceIndex = ids.firstIndex(of: profileID),
+              let destIndex = ids.firstIndex(of: targetID) else { return }
+
+        ids.remove(at: sourceIndex)
+        var insertionIndex = destIndex
+        if targetEdge == .bottom {
+            insertionIndex = min(insertionIndex + 1, ids.count)
+        }
+        if sourceIndex < destIndex && targetEdge == .top {
+            insertionIndex = max(0, insertionIndex)
+        }
+        insertionIndex = min(max(0, insertionIndex), ids.count)
+        ids.insert(profileID, at: insertionIndex)
+
+        controller.reorder(profileIDs: ids, target: "all")
     }
 
-    private func finishDrag(
-        profileID: String,
-        profiles: [AntigravityProfile]
-    ) {
-        var order = profiles.map(\.id)
-        if let targetID = dropTargetProfileID,
-           targetID != profileID,
-           let fromIndex = order.firstIndex(of: profileID),
-           let targetIndex = order.firstIndex(of: targetID) {
-            order.move(
-                fromOffsets: IndexSet(integer: fromIndex),
-                toOffset: targetIndex > fromIndex ? targetIndex + 1 : targetIndex
-            )
-            controller.reorder(profileIDs: order, target: "all")
-            NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
-        }
-
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-            resetDrag()
-        }
-        NSCursor.openHand.set()
-    }
-
-    private func moveProfile(
-        _ profileID: String,
-        by offset: Int,
-        profiles: [AntigravityProfile]
-    ) {
-        var order = profiles.map(\.id)
-        guard let currentIndex = order.firstIndex(of: profileID) else { return }
-        let targetIndex = currentIndex + offset
-        guard order.indices.contains(targetIndex) else { return }
-        order.swapAt(currentIndex, targetIndex)
-        withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
-            controller.reorder(profileIDs: order, target: "all")
-        }
-    }
-
-    private func resetDrag() {
-        draggedProfileID = nil
-        dragOffset = 0
-        dropTargetProfileID = nil
-        dropTargetEdge = nil
-        profileFrames = [:]
+    private func moveProfile(_ profileID: String, by delta: Int, profiles: [AntigravityProfile]) {
+        var ids = profiles.map(\.id)
+        guard let index = ids.firstIndex(of: profileID) else { return }
+        let newIndex = index + delta
+        guard newIndex >= 0, newIndex < ids.count else { return }
+        ids.swapAt(index, newIndex)
+        controller.reorder(profileIDs: ids, target: "all")
     }
 }
 
-private struct AntigravityRemoval {
-    let profileID: String
-}
+// MARK: - Account Card
 
-private struct AntigravityAccountCard: View {
+struct AntigravityAccountCard: View {
     let profile: AntigravityProfile
     let isCliActive: Bool
     let isIdeActive: Bool
@@ -552,18 +549,19 @@ private struct AntigravityAccountCard: View {
     let onRemove: () -> Void
     let onDragChanged: (DragGesture.Value) -> Void
     let onDragEnded: () -> Void
-    @State private var isDragHandleHovered = false
-    @State private var isActionsHovered = false
-    @State private var isEmailRevealed = false
+
     @State private var isEmailHovered = false
+    @State private var isEmailRevealed = false
+    @State private var isActionsHovered = false
+    @State private var isDragHandleHovered = false
 
     private var isFullyActive: Bool { isCliActive && isIdeActive }
     private var isPartiallyActive: Bool { isCliActive || isIdeActive }
 
     private var activeBadgeText: String? {
-        if isCliActive && isIdeActive { return "Активен" }
-        if isCliActive { return "Активен (CLI)" }
-        if isIdeActive { return "Активен (IDE)" }
+        if isCliActive && isIdeActive { return L10n.active }
+        if isCliActive { return L10n.activeCli }
+        if isIdeActive { return L10n.activeIde }
         return nil
     }
 
@@ -607,8 +605,8 @@ private struct AntigravityAccountCard: View {
                         .onEnded { _ in onDragEnded() }
                     )
                     .allowsHitTesting(!isLoading)
-                    .accessibilityLabel("Изменить порядок аккаунта")
-                    .accessibilityHint("Перетащите вверх или вниз")
+                    .accessibilityLabel(L10n.reorderAccount)
+                    .accessibilityHint(L10n.dragHint)
                 if isPartiallyActive {
                     Circle()
                         .fill(Color.green)
@@ -633,7 +631,7 @@ private struct AntigravityAccountCard: View {
                             isEmailRevealed.toggle()
                         }
                     }
-                    .help(isEmailRevealed ? "Нажмите, чтобы скрыть полный email" : "Нажмите, чтобы показать полный email")
+                    .help(isEmailRevealed ? L10n.hideFullEmail : L10n.showFullEmail)
                 if let plan = profile.plan, !plan.isEmpty {
                     Text(plan.capitalized)
                         .font(.caption2)
@@ -657,7 +655,7 @@ private struct AntigravityAccountCard: View {
                         Button {
                             onSwitchAll()
                         } label: {
-                            Label("Переключить везде (CLI + IDE)", systemImage: "arrow.right.circle")
+                            Label(L10n.switchEverywhere, systemImage: "arrow.right.circle")
                         }
                         Divider()
                     }
@@ -665,18 +663,18 @@ private struct AntigravityAccountCard: View {
                         Button {
                             onSwitchCli()
                         } label: {
-                            Label("Переключить только CLI", systemImage: "terminal")
+                            Label(L10n.switchCliOnly, systemImage: "terminal")
                         }
                     }
                     if !isIdeActive {
                         Button {
                             onSwitchIde()
                         } label: {
-                            Label("Переключить только IDE", systemImage: "chevron.left.forwardslash.chevron.right")
+                            Label(L10n.switchIdeOnly, systemImage: "chevron.left.forwardslash.chevron.right")
                         }
                     }
                     Divider()
-                    Button("Удалить из свитчера", role: .destructive, action: onRemove)
+                    Button(L10n.removeFromSwitcher, role: .destructive, action: onRemove)
                 } label: {
                     HoverIcon(systemName: "ellipsis", isHovered: isActionsHovered)
                 }
@@ -684,22 +682,25 @@ private struct AntigravityAccountCard: View {
                 .menuIndicator(.hidden)
                 .controlSize(.small)
                 .disabled(isLoading)
-                .accessibilityLabel("Действия аккаунта")
+                .accessibilityLabel(L10n.accountActions)
                 .onHover { isActionsHovered = $0 }
                 .nonFocusable()
             }
+
             quotaSection
         }
         .padding(10)
         .background(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 10)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 10)
                 .stroke(
-                    isPartiallyActive ? Color.green.opacity(0.6) : Color.primary.opacity(0.12),
-                    lineWidth: 1
+                    isFullyActive
+                        ? Color.green.opacity(0.65)
+                        : (isPartiallyActive ? Color.green.opacity(0.35) : Color.clear),
+                    lineWidth: 1.5
                 )
         )
     }
@@ -733,10 +734,10 @@ private struct AntigravityAccountCard: View {
             if let usage, usage.ok == true, usage.stale != true {
                 let windows = menuUsageWindows(usage)
                 if let short = windows.short {
-                    UsageBarRow(label: "5 ч", window: short, stale: usage.stale ?? false)
+                    UsageBarRow(label: L10n.fiveHours, window: short, stale: usage.stale ?? false)
                 }
                 if let weekly = windows.weekly {
-                    UsageBarRow(label: "Неделя", window: weekly, stale: usage.stale ?? false)
+                    UsageBarRow(label: L10n.week, window: weekly, stale: usage.stale ?? false)
                 }
                 if windows.short == nil && windows.weekly == nil {
                     noQuotaText
@@ -748,7 +749,7 @@ private struct AntigravityAccountCard: View {
     }
 
     private var noQuotaText: some View {
-        Text("нет данных")
+        Text(L10n.noData)
             .font(.caption)
             .foregroundColor(.secondary)
     }
