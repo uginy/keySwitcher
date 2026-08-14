@@ -1,0 +1,1912 @@
+//
+//  KeySwitcher — menu bar switcher for Codex ChatGPT accounts.
+//  Single-file AppKit + SwiftUI hybrid. UI language: Russian.
+//
+//  Talks to the Python engine (keyswitcher.py) which prints exactly one
+//  JSON object to stdout per invocation. Tokens are never read or shown here.
+//
+
+import AppKit
+import Combine
+import ServiceManagement
+import SwiftUI
+import UserNotifications
+
+// MARK: - Engine JSON contract (Codable models, tolerant optionals)
+
+struct StatusResponse: Codable, Sendable {
+    var ok: Bool?
+    var generated_at: Int?
+    var active_slot: Int?
+    var active_account_id: String?
+    var daemon: DaemonInfo?
+    var autoswitch: AutoswitchInfo?
+    var accounts: [AccountInfo]?
+    var error: String?
+}
+
+struct DaemonInfo: Codable, Sendable {
+    var running: Bool?
+}
+
+struct AutoswitchInfo: Codable, Sendable {
+    var enabled: Bool?
+    var cooldown_until: Int?
+}
+
+struct AccountInfo: Codable, Sendable {
+    var slot: Int
+    var file: String?
+    var email: String?
+    var account_id: String?
+    var active: Bool?
+    var plan: String?
+    var usage: UsageInfo?
+    var error: String?
+}
+
+struct UsageInfo: Codable, Sendable {
+    var ok: Bool?
+    var fetched_at: Int?
+    var stale: Bool?
+    var allowed: Bool?
+    var primary: UsageWindow?
+    var secondary: UsageWindow?
+    var credits_balance: Double?
+    var error: String?
+}
+
+struct UsageWindow: Codable, Sendable {
+    var used_percent: Double?
+    var reset_at: Int?
+    var window_minutes: Int?
+}
+
+struct SwitchResponse: Codable, Sendable {
+    var ok: Bool?
+    var slot: Int?
+    var email: String?
+    var error: String?
+    var log: [String]?
+}
+
+struct AutoswitchCheckResponse: Codable, Sendable {
+    var ok: Bool?
+    var switched: Bool?
+    var from_slot: Int?
+    var to_slot: Int?
+    var to_email: String?
+    var reason: String?
+}
+
+struct DaemonResponse: Codable, Sendable {
+    var ok: Bool?
+    var running: Bool?
+    var error: String?
+}
+
+struct ConfigResponse: Codable, Sendable {
+    var ok: Bool?
+    var config: ConfigData?
+    var error: String?
+}
+
+struct ConfigData: Codable, Sendable {
+    var autoswitch_enabled: Bool?
+    var notifications: Bool?
+}
+
+// MARK: - Engine client (Process + per-command watchdog, serial utility queue)
+
+enum EngineError: Error, Sendable {
+    case engineMissing
+    case launchFailed(String)
+    case timedOut(seconds: Int)
+    case badOutput(String)
+
+    var displayText: String {
+        switch self {
+        case .engineMissing: return "Движок не найден"
+        case .launchFailed(let message): return "Не удалось запустить движок: \(message)"
+        case .timedOut(let seconds): return "Движок не ответил за \(seconds) с"
+        case .badOutput(let message): return "Некорректный ответ движка: \(message)"
+        }
+    }
+
+    var isEngineMissing: Bool {
+        if case .engineMissing = self { return true }
+        return false
+    }
+
+    var isTimedOut: Bool {
+        if case .timedOut = self { return true }
+        return false
+    }
+}
+
+final class EngineClient {
+    /// Switch and autoswitch-check can legitimately run for a while (rotator.py may
+    /// wait on the TCC consent dialog); status/switch must comfortably exceed the
+    /// engine's serialized token-refresh worst case (~30s under degraded network),
+    /// so the watchdog never SIGTERMs a refresh mid-flight and bricks a slot.
+    static let switchTimeout: TimeInterval = 60
+
+    private let queue = DispatchQueue(label: "com.eugene.keyswitcher.engine", qos: .utility)
+    private let pythonPath = "/usr/bin/python3"
+
+    /// Per-command watchdog budget — the engine's worst cases differ a lot:
+    /// - status: serialized token refreshes (10s HTTP timeout each) + usage fetch
+    /// - switch / autoswitch-check: rotator.py can block on the first Automation/Accessibility prompt
+    /// - daemon on/off: up to three launchctl/pkill calls capped at 30s each inside the engine
+    /// - config: pure local file I/O
+    private func watchdogTimeout(for args: [String]) -> TimeInterval {
+        switch args.first {
+        case "config": return 20
+        case "daemon": return 95
+        case "relogin": return 330 // interactive browser OAuth: up to 5 min + slack
+        case "add": return 330
+        case "delete": return 20
+        default: return EngineClient.switchTimeout // status, switch, autoswitch-check
+        }
+    }
+
+    /// Resolution order: env KEYSWITCHER_ENGINE → bundle Resources/keyswitcher.py
+    /// → dev path in the project tree (engine/keyswitcher.py).
+    ///
+    /// The engine is never read from ~/.codex — it ships inside the app bundle so
+    /// that wiping or reinstalling Codex can't take the KeySwitcher code with it.
+    /// ~/.codex only ever holds the engine's runtime data (config/cache/state).
+    func resolveEnginePath() -> String? {
+        let fileManager = FileManager.default
+        var candidates: [String] = []
+        if let envPath = ProcessInfo.processInfo.environment["KEYSWITCHER_ENGINE"], !envPath.isEmpty {
+            candidates.append(envPath)
+        }
+        if let resourcePath = Bundle.main.resourceURL?.appendingPathComponent("keyswitcher.py").path {
+            candidates.append(resourcePath)
+        }
+        // Last resort for running the unbundled binary in dev: the engine next
+        // to this source file. #filePath is resolved at build time to the path
+        // swiftc was given, so it tracks the project wherever it's rebuilt.
+        candidates.append(URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // app/
+            .deletingLastPathComponent()   // project root
+            .appendingPathComponent("engine/keyswitcher.py").path)
+        for candidate in candidates where fileManager.isReadableFile(atPath: candidate) {
+            return candidate
+        }
+        return nil
+    }
+
+    /// Runs the engine on the serial utility queue; completion always hops to main.
+    func run<T: Decodable & Sendable>(_ args: [String], as type: T.Type, completion: @escaping (Result<T, EngineError>) -> Void) {
+        queue.async {
+            let result = self.runSynchronously(args, as: type)
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    private func runSynchronously<T: Decodable & Sendable>(_ args: [String], as type: T.Type) -> Result<T, EngineError> {
+        guard let enginePath = resolveEnginePath() else { return .failure(.engineMissing) }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: pythonPath)
+        process.arguments = [enginePath] + args
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        do {
+            try process.run()
+        } catch {
+            return .failure(.launchFailed(error.localizedDescription))
+        }
+
+        // Watchdog: a hung engine must never freeze the app.
+        let timeout = watchdogTimeout(for: args)
+        let timedOutFlag = TimeoutFlag()
+        let watchdog = DispatchWorkItem {
+            if process.isRunning {
+                timedOutFlag.set()
+                process.terminate()
+            }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: watchdog)
+
+        // Drain stderr on a side queue so a chatty engine cannot deadlock the pipes.
+        DispatchQueue.global(qos: .utility).async {
+            _ = try? stderrPipe.fileHandleForReading.readToEnd()
+        }
+
+        let outputData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        watchdog.cancel()
+
+        do {
+            // Decode first: complete valid JSON means the engine finished its work,
+            // even if the watchdog raced the process exit and set the flag (TOCTOU).
+            let decoded = try JSONDecoder().decode(T.self, from: outputData)
+            return .success(decoded)
+        } catch {
+            if timedOutFlag.isSet { return .failure(.timedOut(seconds: Int(timeout))) }
+            // Never echo raw engine output here (defense in depth for token safety).
+            let summary = String(String(describing: error).prefix(180))
+            return .failure(.badOutput(summary))
+        }
+    }
+}
+
+/// Tiny thread-safe boolean for the watchdog.
+final class TimeoutFlag {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+// MARK: - User notifications (guarded for non-bundle runs)
+
+enum Notifier {
+    /// UNUserNotificationCenter throws ObjC exceptions without a proper bundle.
+    static let isAvailable: Bool = (Bundle.main.bundleIdentifier != nil)
+
+    static func requestAuthorization() {
+        guard isAvailable else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in
+            // Denial is fine; we just stay silent.
+        }
+    }
+
+    static func post(body: String) {
+        guard isAvailable else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Codex"
+        content.body = body
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request) { _ in }
+    }
+}
+
+// MARK: - Observable app state
+
+final class AppState: ObservableObject {
+    @Published var status: StatusResponse?
+    @Published var config: ConfigData?
+    @Published var engineMissing = false
+    @Published var statusFailed = false
+    @Published var lastErrorText: String?
+    @Published var isLoading = false
+    @Published var isSwitching = false
+    @Published var switchingSlot: Int?
+    @Published var reloginingSlot: Int?
+    @Published var deletingSlot: Int?
+    @Published var isAdding = false
+    @Published var autoswitchEnabled = false   // opt-in; ON drives the reactive daemon
+    @Published var daemonRunning = false        // tracked internally; ON mirrors autoswitch
+    @Published var loginItemEnabled = false
+
+    var notificationsEnabled: Bool { config?.notifications ?? true }
+}
+
+// MARK: - Status controller (engine orchestration, serial per-kind state machine)
+
+final class StatusController {
+    let state: AppState
+    private let engine = EngineClient()
+
+    private var statusInFlight = false
+    private var autoswitchInFlight = false
+    private var lastKnownSlot: Int?
+    /// While this deadline is in the future, slot changes are considered app-initiated
+    /// (manual switch or autoswitch-check) and do not trigger the "external change" notification.
+    private var suppressExternalChangeUntil = Date.distantPast
+    /// Slot the app was switching to when the engine watchdog fired. rotator.py swaps
+    /// auth.json early in its sequence, so a timed-out switch has usually already
+    /// succeeded — the next status confirms or denies instead of a hard error.
+    private var pendingTimedOutSwitchSlot: Int?
+    private var lastAutoswitchPromptAt = Date.distantPast
+
+    init(state: AppState) {
+        self.state = state
+    }
+
+    private var lastRefreshTime: Date?
+
+    func refreshStatus(silent: Bool = false) {
+        guard !statusInFlight else { return }
+        statusInFlight = true
+        if !silent {
+            state.isLoading = true
+        }
+        engine.run(["status"], as: StatusResponse.self) { [weak self] result in
+            guard let self = self else { return }
+            self.statusInFlight = false
+            self.lastRefreshTime = Date()
+            if !silent {
+                self.state.isLoading = false
+            }
+            switch result {
+            case .failure(let error):
+                self.state.engineMissing = error.isEngineMissing
+                self.state.statusFailed = true
+                self.state.lastErrorText = error.displayText
+            case .success(let response):
+                self.state.engineMissing = false
+                self.state.statusFailed = (response.ok == false)
+                self.state.lastErrorText = (response.ok == false) ? (response.error ?? "Ошибка движка") : nil
+                self.apply(status: response)
+            }
+        }
+    }
+
+    func refreshIfNeeded(minInterval: TimeInterval = 15, silent: Bool = true) {
+        if state.status != nil, let last = lastRefreshTime, Date().timeIntervalSince(last) < minInterval {
+            return
+        }
+        refreshStatus(silent: silent)
+    }
+
+    private func apply(status: StatusResponse) {
+        if let running = status.daemon?.running {
+            state.daemonRunning = running
+        }
+        if let autoswitch = status.autoswitch {
+            if let enabled = autoswitch.enabled { state.autoswitchEnabled = enabled }
+        }
+        if let newSlot = status.active_slot {
+            if let pendingSlot = pendingTimedOutSwitchSlot {
+                // A switch timed out earlier — this status is the verification.
+                pendingTimedOutSwitchSlot = nil
+                if pendingSlot == newSlot {
+                    state.lastErrorText = nil
+                    let email = status.accounts?.first(where: { $0.slot == newSlot })?.email
+                    postNotificationIfEnabled("Переключено на \(email ?? "слот \(newSlot)")")
+                } else {
+                    state.lastErrorText = "Переключение на слот \(pendingSlot) не подтвердилось"
+                }
+            } else if let previousSlot = lastKnownSlot,
+                      previousSlot != newSlot,
+                      Date() > suppressExternalChangeUntil {
+                // External change (e.g. the reactive daemon rotated the account).
+                let email = status.accounts?.first(where: { $0.slot == newSlot })?.email
+                postNotificationIfEnabled("Аккаунт сменён на \(email ?? "слот \(newSlot)")")
+            }
+            lastKnownSlot = newSlot
+        }
+        state.status = status
+    }
+
+    // MARK: Manual switching
+
+    func switchTo(slot: Int, restartCodex: Bool = true) {
+        guard !state.isSwitching else { return }
+        state.isSwitching = true
+        state.switchingSlot = slot
+        markAppInitiatedChange()
+        var args = ["switch", String(slot)]
+        if !restartCodex { args.append("--no-restart") }
+        engine.run(args, as: SwitchResponse.self) { [weak self] result in
+            guard let self = self else { return }
+            self.state.isSwitching = false
+            self.state.switchingSlot = nil
+            switch result {
+            case .failure(let error):
+                self.state.engineMissing = error.isEngineMissing
+                if error.isTimedOut {
+                    // auth.json is swapped early in rotator.py, so the switch likely
+                    // already succeeded — verify via the forced refresh below.
+                    self.pendingTimedOutSwitchSlot = slot
+                    self.state.lastErrorText = "Переключение затянулось — проверяю результат…"
+                } else {
+                    self.state.lastErrorText = error.displayText
+                }
+            case .success(let response):
+                if response.ok == true {
+                    let suffix = restartCodex ? "" : " без рестарта"
+                    self.postNotificationIfEnabled("Переключено на \(response.email ?? "слот \(slot)")\(suffix)")
+                } else {
+                    self.state.lastErrorText = response.error ?? "Не удалось переключить аккаунт"
+                }
+            }
+            self.refreshStatus()
+        }
+    }
+
+    // MARK: Re-authentication (interactive `codex login` for a dead slot)
+
+    func reloginSlot(slot: Int) {
+        guard !state.isSwitching, state.reloginingSlot == nil else { return }
+        state.isSwitching = true
+        state.reloginingSlot = slot
+        // Isolated browser login can run for several minutes; suppress watcher
+        // noise for the whole window while the engine owns this operation.
+        markAppInitiatedChange(seconds: 330 + 30)
+        engine.run(["relogin", String(slot)], as: SwitchResponse.self) { [weak self] result in
+            guard let self = self else { return }
+            self.state.isSwitching = false
+            self.state.reloginingSlot = nil
+            switch result {
+            case .failure(let error):
+                self.state.engineMissing = error.isEngineMissing
+                self.state.lastErrorText = error.isTimedOut
+                    ? "Вход не завершён вовремя — попробуйте ещё раз"
+                    : error.displayText
+            case .success(let response):
+                if response.ok == true {
+                    self.postNotificationIfEnabled("Авторизация обновлена: \(response.email ?? "слот \(slot)")")
+                } else {
+                    self.state.lastErrorText = response.error ?? "Не удалось обновить авторизацию"
+                }
+            }
+            self.refreshStatus()
+        }
+    }
+
+    // MARK: Config
+
+    func loadConfig() {
+        engine.run(["config", "get"], as: ConfigResponse.self) { [weak self] result in
+            if case .success(let response) = result {
+                self?.applyConfig(response.config)
+            }
+        }
+    }
+
+    private func applyConfig(_ config: ConfigData?) {
+        guard let config = config else { return }
+        state.config = config
+    }
+
+    // MARK: Login item (SMAppService)
+
+    func refreshLoginItemState() {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        state.loginItemEnabled = (SMAppService.mainApp.status == .enabled)
+    }
+
+    func setLoginItem(_ enabled: Bool) {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            state.lastErrorText = "Автозапуск: \(error.localizedDescription)"
+        }
+        refreshLoginItemState()
+    }
+
+    // MARK: Account Add / Delete
+
+    func addAccount() {
+        guard !state.isSwitching && !state.isAdding else { return }
+        state.isAdding = true
+        state.isSwitching = true
+        markAppInitiatedChange(seconds: 330 + 30)
+        engine.run(["add"], as: SwitchResponse.self) { [weak self] result in
+            guard let self = self else { return }
+            self.state.isSwitching = false
+            self.state.isAdding = false
+            switch result {
+            case .failure(let error):
+                self.state.engineMissing = error.isEngineMissing
+                self.state.lastErrorText = error.isTimedOut
+                    ? "Добавление не завершено вовремя — попробуйте ещё раз"
+                    : error.displayText
+            case .success(let response):
+                if response.ok == true {
+                    self.postNotificationIfEnabled("Добавлен новый аккаунт: \(response.email ?? "слот \(response.slot ?? 0)")")
+                } else {
+                    self.state.lastErrorText = response.error ?? "Не удалось добавить аккаунт"
+                }
+            }
+            self.refreshStatus()
+        }
+    }
+
+    func cancelAddAccount() {
+        state.isAdding = false
+        state.isSwitching = false
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        process.arguments = ["-f", "codex login"]
+        try? process.run()
+    }
+
+    func deleteSlot(slot: Int, email: String?) {
+        guard !state.isSwitching, state.deletingSlot == nil else { return }
+        state.isSwitching = true
+        state.deletingSlot = slot
+        markAppInitiatedChange()
+        engine.run(["delete", String(slot)], as: DaemonResponse.self) { [weak self] result in
+            guard let self = self else { return }
+            self.state.isSwitching = false
+            self.state.deletingSlot = nil
+            switch result {
+            case .failure(let error):
+                self.state.engineMissing = error.isEngineMissing
+                self.state.lastErrorText = error.displayText
+            case .success(let response):
+                if response.ok == true {
+                    self.postNotificationIfEnabled("Аккаунт \(email ?? "слот \(slot)") успешно удалён")
+                } else {
+                    self.state.lastErrorText = response.error ?? "Не удалось удалить аккаунт"
+                }
+            }
+            self.refreshStatus()
+        }
+    }
+
+    // MARK: Helpers
+
+    func markAppInitiatedChange(seconds: TimeInterval = EngineClient.switchTimeout + 30) {
+        // Comfortably longer than the engine watchdog for the operation, so a slow
+        // (or timed-out-but-successful) change never reads as an external change.
+        suppressExternalChangeUntil = Date().addingTimeInterval(seconds)
+    }
+
+    private func postNotificationIfEnabled(_ body: String) {
+        guard state.notificationsEnabled else { return }
+        Notifier.post(body: body)
+    }
+}
+
+// MARK: - auth.json watcher (DispatchSource, re-opens fd on rename/delete)
+
+final class AuthFileWatcher {
+    private let path: String
+    private var source: DispatchSourceFileSystemObject?
+    private var debounceWork: DispatchWorkItem?
+    var onChange: (() -> Void)?
+
+    init(path: String) {
+        self.path = path
+    }
+
+    func start() {
+        openAndWatch()
+    }
+
+    func stop() {
+        debounceWork?.cancel()
+        source?.cancel()
+        source = nil
+    }
+
+    private func openAndWatch() {
+        let descriptor = open(path, O_EVTONLY)
+        guard descriptor >= 0 else {
+            // File may not exist yet — retry later.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                self?.openAndWatch()
+            }
+            return
+        }
+        let newSource = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .rename, .delete],
+            queue: .main
+        )
+        newSource.setEventHandler { [weak self] in
+            guard let self = self, let activeSource = self.source else { return }
+            let events = activeSource.data
+            self.scheduleChange()
+            if events.contains(.rename) || events.contains(.delete) {
+                // rotator.py replaces the file atomically — re-open the descriptor.
+                self.reopen()
+            }
+        }
+        newSource.setCancelHandler {
+            close(descriptor)
+        }
+        source = newSource
+        newSource.resume()
+    }
+
+    private func reopen() {
+        source?.cancel()
+        source = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.openAndWatch()
+        }
+    }
+
+    private func scheduleChange() {
+        debounceWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.onChange?()
+        }
+        debounceWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+    }
+}
+
+// MARK: - Time formatting helpers
+
+func formatResetInterval(secondsFromNow seconds: Int) -> String {
+    if seconds <= 0 { return "сброс скоро" }
+    let days = seconds / 86400
+    let hours = (seconds % 86400) / 3600
+    let minutes = (seconds % 3600) / 60
+    var parts: [String] = []
+    if days > 0 { parts.append("\(days) д") }
+    if hours > 0 { parts.append("\(hours) ч") }
+    if minutes > 0 { parts.append("\(minutes) мин") }
+    if parts.isEmpty { return "сброс меньше чем через минуту" }
+    return "сброс через " + parts.joined(separator: " ")
+}
+
+func formatResetClock(timestamp: Int) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "ru_RU")
+    let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
+    formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "EEE HH:mm"
+    return formatter.string(from: date)
+}
+
+func clampedPercent(_ value: Double?) -> Double {
+    min(max(value ?? 0, 0), 100)
+}
+
+func remainingLimitPercent(fromUsed value: Double?) -> Double {
+    max(0, 100 - clampedPercent(value))
+}
+
+func shortAccountName(email: String?, slot: Int?) -> String {
+    guard let email,
+          let local = email.split(separator: "@", maxSplits: 1).first,
+          !local.isEmpty else {
+        return slot.map { "слот\($0)" } ?? "KS"
+    }
+    // First and last character of the local-part (before @).
+    if local.count == 1 {
+        return String(local)
+    }
+    return String(local.prefix(1)) + String(local.suffix(1))
+}
+
+func menuUsageWindows(_ usage: UsageInfo?) -> (short: UsageWindow?, weekly: UsageWindow?) {
+    guard let usage else { return (nil, nil) }
+
+    var short = usage.primary
+    var weekly = usage.secondary
+
+    if let s = short, let sMin = s.window_minutes, sMin > 24 * 60, weekly == nil {
+        weekly = s
+        short = nil
+    } else if let w = weekly, let wMin = w.window_minutes, wMin <= 24 * 60, short == nil {
+        short = w
+        weekly = nil
+    }
+
+    return (short, weekly)
+}
+
+func antigravityUsageWindows(_ quota: AntigravityQuota?) -> (short: Double?, weekly: Double?, allowed: Bool) {
+    guard let quota else { return (nil, nil, true) }
+
+    let validGemini = (quota.gemini?.ok == true && quota.gemini?.stale != true) ? quota.gemini : nil
+    let validThirdParty = (quota.thirdParty?.ok == true && quota.thirdParty?.stale != true) ? quota.thirdParty : nil
+
+    let gWindows = menuUsageWindows(validGemini)
+    let tWindows = menuUsageWindows(validThirdParty)
+
+    let gAllowed = validGemini?.allowed != false
+    let tAllowed = validThirdParty?.allowed != false
+    let allowed = gAllowed && tAllowed
+
+    var shortUsed: Double? = nil
+    if let gShort = gWindows.short?.used_percent, let tShort = tWindows.short?.used_percent {
+        shortUsed = max(gShort, tShort)
+    } else {
+        shortUsed = gWindows.short?.used_percent ?? tWindows.short?.used_percent
+    }
+
+    var weeklyUsed: Double? = nil
+    if let gWeekly = gWindows.weekly?.used_percent, let tWeekly = tWindows.weekly?.used_percent {
+        weeklyUsed = max(gWeekly, tWeekly)
+    } else {
+        weeklyUsed = gWindows.weekly?.used_percent ?? tWindows.weekly?.used_percent
+    }
+
+    return (shortUsed, weeklyUsed, allowed)
+}
+
+func isLimitWindowExhausted(_ window: UsageWindow?) -> Bool {
+    clampedPercent(window?.used_percent) >= 99
+}
+
+// MARK: - SwiftUI: usage bar row
+
+struct UsageBarRow: View {
+    let label: String
+    let window: UsageWindow
+    let stale: Bool
+
+    private var usedPercent: Double {
+        clampedPercent(window.used_percent)
+    }
+
+    private var remainingPercent: Double {
+        remainingLimitPercent(fromUsed: window.used_percent)
+    }
+
+    private var barColor: Color {
+        let value = usedPercent
+        if value >= 90 { return .red }
+        if value >= 75 { return .orange }
+        if value >= 50 { return .yellow }
+        return .green
+    }
+
+    private var percentText: String {
+        "\(remainingInt)%"
+    }
+
+    private var remainingInt: Int {
+        Int(remainingPercent.rounded())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(width: 44, alignment: .leading)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.primary.opacity(0.10))
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(barColor)
+                            .frame(width: max(0, geometry.size.width * CGFloat(usedPercent) / 100))
+                    }
+                }
+                .frame(height: 8)
+                Text(percentText)
+                    .font(.caption)
+                    .monospacedDigit()
+                    .frame(width: 34, alignment: .trailing)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            if !resetText.isEmpty {
+                Text(resetText)
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .padding(.leading, 50)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+    }
+
+    private var resetText: String {
+        var text = ""
+        if let resetAt = window.reset_at {
+            let remaining = resetAt - Int(Date().timeIntervalSince1970)
+            text = "\(formatResetInterval(secondsFromNow: remaining)) (\(formatResetClock(timestamp: resetAt)))"
+        }
+        return text
+    }
+}
+
+struct HoverIcon: View {
+    let systemName: String
+    var showsProgress = false
+    var isHovered = false
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Group {
+            if showsProgress {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: systemName)
+                    .font(.system(size: 13, weight: .medium))
+            }
+        }
+        .foregroundColor(isHovered && isEnabled ? .accentColor : .primary)
+        .frame(width: 24, height: 24)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isHovered && isEnabled ? Color.accentColor.opacity(0.28) : .clear)
+        )
+        .contentShape(Rectangle())
+    }
+}
+
+struct HoverTrackingView: NSViewRepresentable {
+    let onHover: (Bool) -> Void
+
+    func makeNSView(context: Context) -> HoverTrackingNSView {
+        let view = HoverTrackingNSView()
+        view.onHover = onHover
+        return view
+    }
+
+    func updateNSView(_ nsView: HoverTrackingNSView, context: Context) {
+        nsView.onHover = onHover
+    }
+}
+
+final class HoverTrackingNSView: NSView {
+    var onHover: ((Bool) -> Void)?
+    private var hoverTrackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onHover?(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHover?(false)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+// MARK: - SwiftUI: account card
+
+struct AccountCardView: View {
+    let account: AccountInfo
+    let isSwitchingThis: Bool
+    let isReloginingThis: Bool
+    let buttonsDisabled: Bool
+    let onSwitchWithRestart: () -> Void
+    let onRelogin: () -> Void
+    let onDelete: () -> Void
+    let onDragChanged: (DragGesture.Value) -> Void
+    let onDragEnded: () -> Void
+    @State private var isDragHandleHovered = false
+    @State private var isActionsHovered = false
+    @State private var isEmailRevealed = false
+    @State private var isEmailHovered = false
+
+    private var isActive: Bool { account.active == true }
+
+    private var errorKind: String? {
+        account.error ?? account.usage?.error
+    }
+
+    private var accountLabel: String {
+        shortAccountName(email: account.email, slot: account.slot)
+    }
+
+    private var displayedAccountName: String {
+        if isEmailRevealed, let email = account.email, !email.isEmpty {
+            return email
+        }
+        return accountLabel
+    }
+
+    /// A non-active slot whose saved session is dead and needs re-login.
+    private var needsLogin: Bool {
+        guard !isActive else { return false }
+        if errorKind == "auth_expired" { return true }
+        // Any non-active slot we genuinely failed to read usage for (and aren't
+        // just serving stale data) is treated as needing a fresh sign-in.
+        if let usage = account.usage {
+            return usage.ok != true && usage.stale != true
+        }
+        return false
+    }
+
+    private var strokeColor: Color {
+        if isLimitExhausted { return Color.red.opacity(0.75) }
+        if isActive { return Color.green.opacity(0.6) }
+        if needsLogin { return Color.red.opacity(0.5) }
+        return Color.primary.opacity(0.12)
+    }
+
+    private var isLimitExhausted: Bool {
+        guard let usage = account.usage, usage.ok == true else { return false }
+        if usage.allowed == false { return true }
+        return isLimitWindowExhausted(usage.primary) || isLimitWindowExhausted(usage.secondary)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            headerRow
+            usageSection
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(strokeColor, lineWidth: 1)
+        )
+    }
+
+    private var headerRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(isDragHandleHovered ? .accentColor : Color.primary.opacity(0.8))
+                .frame(width: 18, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(
+                            isDragHandleHovered
+                                ? Color.accentColor.opacity(0.28)
+                                : Color.primary.opacity(0.10)
+                        )
+                )
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    withAnimation(.easeOut(duration: 0.1)) {
+                        isDragHandleHovered = hovering
+                    }
+                    hovering ? NSCursor.openHand.set() : NSCursor.arrow.set()
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 2, coordinateSpace: .named("accountList"))
+                        .onChanged(onDragChanged)
+                        .onEnded { _ in onDragEnded() }
+                )
+                .accessibilityLabel("Изменить порядок аккаунта")
+                .accessibilityHint("Перетащите вверх или вниз")
+            if isActive {
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 10, height: 10)
+            } else if needsLogin {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.red)
+            }
+            if isLimitExhausted {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundColor(.red)
+            }
+            Text(displayedAccountName)
+                .font(.callout)
+                .fontWeight(isActive ? .bold : .regular)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    isEmailHovered = hovering
+                    if hovering {
+                        NSCursor.pointingHand.set()
+                    } else {
+                        NSCursor.arrow.set()
+                    }
+                }
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isEmailRevealed.toggle()
+                    }
+                }
+                .help(isEmailRevealed ? "Нажмите, чтобы скрыть полный email" : "Нажмите, чтобы показать полный email")
+            if let plan = account.plan, !plan.isEmpty {
+                Text(plan.capitalized)
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(Color.accentColor.opacity(0.18)))
+                    .foregroundColor(.accentColor)
+            }
+            Spacer(minLength: 4)
+            if isActive {
+                Text("Активен")
+                    .font(.caption)
+                    .foregroundColor(.green)
+            }
+            actionControl
+        }
+    }
+
+    @ViewBuilder
+    private var actionControl: some View {
+        HStack(spacing: 6) {
+            if isReloginingThis {
+                HStack(spacing: 4) {
+                    ProgressView().controlSize(.small)
+                    Text("Открываю вход…")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            } else if isSwitchingThis {
+                ProgressView()
+                    .controlSize(.small)
+            } else if needsLogin {
+                Button(action: onRelogin) {
+                    Label("Войти", systemImage: "person.crop.circle.badge.plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(.red)
+                .disabled(buttonsDisabled)
+                .nonFocusable()
+            }
+
+            if !isReloginingThis && !isSwitchingThis {
+                ZStack {
+                    Menu {
+                        if !isActive && !needsLogin {
+                            Button(action: onSwitchWithRestart) {
+                                Label("Переключить", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            Divider()
+                        }
+                        Button("Удалить аккаунт", role: .destructive, action: onDelete)
+                    } label: {
+                        HoverIcon(systemName: "ellipsis", isHovered: isActionsHovered)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .controlSize(.small)
+                    .disabled(buttonsDisabled)
+                    .accessibilityLabel("Действия аккаунта")
+                    .nonFocusable()
+                }
+                .contentShape(Rectangle())
+                .overlay {
+                    HoverTrackingView { isActionsHovered = $0 }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var usageSection: some View {
+        if let usage = account.usage, usage.ok == true {
+            let windows = menuUsageWindows(usage)
+            VStack(alignment: .leading, spacing: 4) {
+                if let primary = windows.short {
+                    UsageBarRow(label: "5 ч", window: primary, stale: usage.stale ?? false)
+                }
+                if let secondary = windows.weekly {
+                    UsageBarRow(label: "Неделя", window: secondary, stale: usage.stale ?? false)
+                }
+                if windows.short == nil && windows.weekly == nil {
+                    noDataText
+                }
+            }
+        } else {
+            errorRow
+        }
+    }
+
+    @ViewBuilder
+    private var errorRow: some View {
+        if errorKind == "auth_expired" {
+            Text("сессия завершена — нужен повторный вход")
+                .font(.caption)
+                .foregroundColor(.red)
+        } else {
+            noDataText
+        }
+    }
+
+    private var noDataText: some View {
+        Text("нет данных")
+            .font(.caption)
+            .foregroundColor(.secondary)
+    }
+}
+
+private struct AccountFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [Int: CGRect] = [:]
+
+    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+// MARK: - SwiftUI: popover panel
+
+extension View {
+    /// Suppresses the blue keyboard-focus ring AppKit draws on controls when the
+    /// popover is the key window and the user tabs through it. macOS 14+ uses the
+    /// native modifier; older systems keep the default behavior.
+    @ViewBuilder
+    func noFocusRing() -> some View {
+        if #available(macOS 14.0, *) {
+            focusEffectDisabled()
+        } else {
+            self
+        }
+    }
+
+    /// Prevents buttons in the popover from stealing initial keyboard focus.
+    @ViewBuilder
+    func nonFocusable() -> some View {
+        if #available(macOS 13.0, *) {
+            focusable(false)
+        } else {
+            self
+        }
+    }
+}
+
+struct PanelView: View {
+    @ObservedObject var state: AppState
+    let controller: StatusController
+    @ObservedObject var antigravityController: AntigravityController
+    @State private var refreshCooldown = false
+    @State private var isAddHovered = false
+    @State private var isRefreshHovered = false
+    @State private var slotToDelete: AccountInfo? = nil
+    @State private var accountOrder: [Int] = {
+        (UserDefaults.standard.array(forKey: "accountOrder") ?? []).compactMap {
+            ($0 as? NSNumber)?.intValue
+        }
+    }()
+    @State private var draggedSlot: Int? = nil
+    @State private var dragOffset: CGFloat = 0
+    @State private var dropTargetSlot: Int? = nil
+    @State private var dropTargetEdge: VerticalEdge? = nil
+    @State private var accountFrames: [Int: CGRect] = [:]
+    @State private var isFooterSettingsHovered = false
+
+    private var refreshDisabled: Bool {
+        state.isLoading || state.isSwitching || refreshCooldown
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            codexPanel
+
+            Divider()
+
+            AntigravityPanelView(controller: antigravityController)
+
+            Divider()
+
+            footerView
+        }
+        .padding(12)
+        .frame(width: 580)
+        .alert("Удалить аккаунт?", isPresented: Binding(
+            get: { slotToDelete != nil },
+            set: { if !$0 { slotToDelete = nil } }
+        )) {
+            if let slot = slotToDelete {
+                Button("Удалить", role: .destructive) {
+                    controller.deleteSlot(slot: slot.slot, email: slot.email)
+                    slotToDelete = nil
+                }
+                Button("Отмена", role: .cancel) {
+                    slotToDelete = nil
+                }
+            }
+        } message: {
+            if let slot = slotToDelete {
+                if slot.active == true {
+                    Text("Это активный аккаунт \(slot.email ?? "слот \(slot.slot)"). Удаление разлогинит Codex (будет удалён ~/.codex/auth.json). Продолжить?")
+                } else {
+                    Text("Удалить аккаунт \(slot.email ?? "слот \(slot.slot)") из KeySwitcher?")
+                }
+            }
+        }
+    }
+
+    private var footerView: some View {
+        HStack {
+            Text("KeySwitcher")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Spacer()
+            ZStack {
+                Menu {
+                    Toggle(isOn: Binding(
+                        get: { state.loginItemEnabled },
+                        set: { controller.setLoginItem($0) }
+                    )) {
+                        Text("Запускать при входе")
+                    }
+                    Divider()
+                    Button("Выйти", role: .destructive) {
+                        NSApp.terminate(nil)
+                    }
+                } label: {
+                    HoverIcon(systemName: "gearshape", isHovered: isFooterSettingsHovered)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .controlSize(.small)
+                .accessibilityLabel("Настройки приложения")
+                .nonFocusable()
+            }
+            .contentShape(Rectangle())
+            .overlay {
+                HoverTrackingView { isFooterSettingsHovered = $0 }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    private var codexPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            header
+            Divider()
+            content
+            if let errorText = state.lastErrorText, !state.engineMissing {
+                Text(errorText)
+                    .font(.caption2)
+                    .foregroundColor(.red)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text("Codex KeySwitcher")
+                .font(.headline)
+            Spacer()
+            Button(action: { controller.addAccount() }) {
+                HoverIcon(systemName: "plus", isHovered: isAddHovered)
+            }
+            .buttonStyle(.borderless)
+            .disabled(state.isSwitching || state.isAdding)
+            .accessibilityLabel("Добавить аккаунт")
+            .onHover { isAddHovered = $0 }
+            .nonFocusable()
+            Button {
+                refreshStatus()
+            } label: {
+                HoverIcon(
+                    systemName: "arrow.clockwise",
+                    showsProgress: state.isLoading,
+                    isHovered: isRefreshHovered
+                )
+            }
+            .buttonStyle(.borderless)
+            .disabled(refreshDisabled)
+            .onHover { isRefreshHovered = $0 }
+            .nonFocusable()
+        }
+    }
+
+    // MARK: Accounts / empty states
+
+    @ViewBuilder
+    private var content: some View {
+        if state.engineMissing {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Движок не найден")
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                Text("Ожидается keyswitcher.py в Resources приложения")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 12)
+        } else if let accounts = state.status?.accounts, !accounts.isEmpty {
+            VStack(spacing: 8) {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: 8),
+                        GridItem(.flexible(), spacing: 8)
+                    ],
+                    spacing: 8
+                ) {
+                    ForEach(orderedAccounts(accounts), id: \.slot) { account in
+                        AccountCardView(
+                            account: account,
+                            isSwitchingThis: state.switchingSlot == account.slot,
+                            isReloginingThis: state.reloginingSlot == account.slot,
+                            buttonsDisabled: state.isSwitching,
+                            onSwitchWithRestart: { controller.switchTo(slot: account.slot, restartCodex: true) },
+                            onRelogin: { controller.reloginSlot(slot: account.slot) },
+                            onDelete: { slotToDelete = account },
+                            onDragChanged: { updateDrag($0, slot: account.slot, accounts: accounts) },
+                            onDragEnded: { finishDrag(slot: account.slot, accounts: accounts) }
+                        )
+                        .background {
+                            GeometryReader { geometry in
+                                Color.clear.preference(
+                                    key: AccountFramePreferenceKey.self,
+                                    value: [account.slot: geometry.frame(in: .named("accountList"))]
+                                )
+                            }
+                        }
+                        .offset(y: draggedSlot == account.slot ? dragOffset : 0)
+                        .scaleEffect(draggedSlot == account.slot ? 1.015 : 1)
+                        .shadow(
+                            color: .black.opacity(draggedSlot == account.slot ? 0.24 : 0),
+                            radius: draggedSlot == account.slot ? 12 : 0,
+                            y: draggedSlot == account.slot ? 6 : 0
+                        )
+                        .zIndex(draggedSlot == account.slot ? 10 : 0)
+                        .overlay(alignment: dropIndicatorAlignment) {
+                            dropIndicator(for: account.slot)
+                        }
+                        .accessibilityAction(named: Text("Переместить выше")) {
+                            moveAccount(account.slot, by: -1, accounts: accounts)
+                        }
+                        .accessibilityAction(named: Text("Переместить ниже")) {
+                            moveAccount(account.slot, by: 1, accounts: accounts)
+                        }
+                    }
+                }
+                addAccountProgress
+            }
+            .coordinateSpace(name: "accountList")
+            .onAppear { syncAccountOrder(with: accounts) }
+            .onChange(of: accounts.map(\.slot)) { _ in
+                syncAccountOrder(with: accounts)
+            }
+            .onPreferenceChange(AccountFramePreferenceKey.self) { frames in
+                if draggedSlot == nil {
+                    accountFrames = frames
+                }
+            }
+        } else if state.isLoading {
+            Text("Загрузка…")
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 12)
+        } else {
+            VStack(spacing: 12) {
+                Text(state.lastErrorText ?? "Нет данных")
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                addAccountProgress
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 12)
+        }
+    }
+
+    // MARK: Add Account Progress
+
+    @ViewBuilder
+    private var addAccountProgress: some View {
+        if state.isAdding {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Авторизация в браузере...")
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button("Отмена") {
+                    controller.cancelAddAccount()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .nonFocusable()
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private func refreshStatus() {
+        guard !refreshDisabled else { return }
+        refreshCooldown = true
+        controller.refreshStatus(silent: false)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            refreshCooldown = false
+        }
+    }
+
+    private var dropIndicatorAlignment: Alignment {
+        dropTargetEdge == .bottom ? .bottom : .top
+    }
+
+    @ViewBuilder
+    private func dropIndicator(for slot: Int) -> some View {
+        if dropTargetSlot == slot && draggedSlot != slot {
+            Capsule()
+                .fill(Color.accentColor)
+                .frame(height: 3)
+                .padding(.horizontal, 8)
+                .offset(y: dropTargetEdge == .bottom ? 5 : -5)
+        }
+    }
+
+    private func orderedAccounts(_ accounts: [AccountInfo]) -> [AccountInfo] {
+        let accountsBySlot = Dictionary(uniqueKeysWithValues: accounts.map { ($0.slot, $0) })
+        return normalizedAccountOrder(for: accounts).compactMap { accountsBySlot[$0] }
+    }
+
+    private func normalizedAccountOrder(for accounts: [AccountInfo]) -> [Int] {
+        let availableSlots = Set(accounts.map(\.slot))
+        let savedSlots = accountOrder.filter(availableSlots.contains)
+        return savedSlots + accounts.map(\.slot).filter { !savedSlots.contains($0) }
+    }
+
+    private func syncAccountOrder(with accounts: [AccountInfo]) {
+        let normalizedOrder = normalizedAccountOrder(for: accounts)
+        guard normalizedOrder != accountOrder else { return }
+        accountOrder = normalizedOrder
+        saveAccountOrder(normalizedOrder)
+    }
+
+    private func updateDrag(_ gesture: DragGesture.Value, slot: Int, accounts: [AccountInfo]) {
+        if draggedSlot != slot {
+            accountOrder = normalizedAccountOrder(for: accounts)
+            withAnimation(.easeOut(duration: 0.12)) {
+                draggedSlot = slot
+            }
+        }
+        NSCursor.closedHand.set()
+        dragOffset = gesture.translation.height
+
+        let targetSlot = accountFrames.min {
+            abs($0.value.midY - gesture.location.y) < abs($1.value.midY - gesture.location.y)
+        }?.key
+        guard targetSlot != dropTargetSlot else { return }
+        dropTargetSlot = targetSlot
+
+        let order = normalizedAccountOrder(for: accounts)
+        if let targetSlot,
+           targetSlot != slot,
+           let fromIndex = order.firstIndex(of: slot),
+           let targetIndex = order.firstIndex(of: targetSlot) {
+            dropTargetEdge = targetIndex > fromIndex ? .bottom : .top
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        } else {
+            dropTargetEdge = nil
+        }
+    }
+
+    private func finishDrag(slot: Int, accounts: [AccountInfo]) {
+        var updatedOrder = normalizedAccountOrder(for: accounts)
+        if let targetSlot = dropTargetSlot,
+           targetSlot != slot,
+           let fromIndex = updatedOrder.firstIndex(of: slot),
+           let targetIndex = updatedOrder.firstIndex(of: targetSlot) {
+            updatedOrder.move(
+                fromOffsets: IndexSet(integer: fromIndex),
+                toOffset: targetIndex > fromIndex ? targetIndex + 1 : targetIndex
+            )
+            saveAccountOrder(updatedOrder)
+            NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+        }
+
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+            accountOrder = updatedOrder
+            draggedSlot = nil
+            dragOffset = 0
+            dropTargetSlot = nil
+            dropTargetEdge = nil
+        }
+        NSCursor.openHand.set()
+    }
+
+    private func moveAccount(_ slot: Int, by offset: Int, accounts: [AccountInfo]) {
+        var updatedOrder = normalizedAccountOrder(for: accounts)
+        guard let currentIndex = updatedOrder.firstIndex(of: slot) else { return }
+        let targetIndex = currentIndex + offset
+        guard updatedOrder.indices.contains(targetIndex) else { return }
+        updatedOrder.swapAt(currentIndex, targetIndex)
+        withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
+            accountOrder = updatedOrder
+        }
+        saveAccountOrder(updatedOrder)
+    }
+
+    private func saveAccountOrder(_ order: [Int]) {
+        UserDefaults.standard.set(order, forKey: "accountOrder")
+    }
+}
+
+// MARK: - App delegate (status item, popover, timers, watcher)
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @preconcurrency UNUserNotificationCenterDelegate {
+    private var statusItem: NSStatusItem?
+    private let popover = NSPopover()
+    private var eventMonitor: Any?
+    private var keyEventMonitor: Any?
+    private let state = AppState()
+    private let antigravityController = AntigravityController()
+    private var controller: StatusController?
+    private var watcher: AuthFileWatcher?
+    private var statusTimer: Timer?
+    private var stateSubscription: AnyCancellable?
+    private var antigravitySubscription: AnyCancellable?
+    private var antigravityNotificationObserver: NSObjectProtocol?
+
+    // MARK: Lifecycle
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        let controller = StatusController(state: state)
+        self.controller = controller
+
+        Notifier.requestAuthorization()
+        if Notifier.isAvailable {
+            UNUserNotificationCenter.current().delegate = self
+        }
+
+        setupStatusItem()
+        setupPopover(controller: controller)
+        subscribeToState()
+
+        controller.refreshStatus()
+        controller.loadConfig()
+        controller.refreshLoginItemState()
+        antigravityController.refresh()
+
+        antigravityNotificationObserver = NotificationCenter.default.addObserver(
+            forName: .antigravityAccountsDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.antigravityController.refresh()
+            }
+        }
+
+        startTimers()
+        startAuthWatcher()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let observer = antigravityNotificationObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        stopEventMonitors()
+        statusTimer?.invalidate()
+        watcher?.stop()
+    }
+
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        return true
+    }
+
+    // MARK: Status item
+
+    private func setupStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = item.button {
+            button.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath.circle.fill", accessibilityDescription: "KeySwitcher")
+            button.imagePosition = .imageLeading
+            button.target = self
+            button.action = #selector(togglePopover(_:))
+        }
+        statusItem = item
+        updateStatusItem()
+    }
+
+    private func subscribeToState() {
+        stateSubscription = state.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                // objectWillChange fires before mutation — hop one runloop turn.
+                DispatchQueue.main.async { self?.updateStatusItem() }
+            }
+        antigravitySubscription = antigravityController.$status
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateStatusItem()
+            }
+    }
+
+    private func updateStatusItem() {
+        guard let button = statusItem?.button else { return }
+        button.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath.circle.fill", accessibilityDescription: "KeySwitcher")
+        button.imagePosition = .imageLeading
+        let font = NSFont.menuBarFont(ofSize: 0)
+
+        let title = NSMutableAttributedString()
+
+        func appendWindow(symbol: String, remaining: Int, allowed: Bool = true) {
+            let color = usageColor(remaining: remaining, allowed: allowed)
+            title.append(symbolText(symbol, color: color, font: font))
+            title.append(NSAttributedString(
+                string: " \(remaining)%",
+                attributes: [.font: font, .foregroundColor: color]
+            ))
+        }
+
+        if state.engineMissing || state.statusFailed {
+            title.append(NSAttributedString(
+                string: "KS ⚠️",
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+            ))
+        } else if let status = state.status {
+            let activeAccount = status.accounts?.first(where: { $0.active == true })
+                ?? status.accounts?.first(where: { $0.slot == status.active_slot })
+            let accountName = shortAccountName(email: activeAccount?.email, slot: status.active_slot)
+
+            title.append(NSAttributedString(
+                string: accountName + " ",
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+            ))
+
+            let allowed = activeAccount?.usage?.allowed != false
+            let windows = menuUsageWindows(activeAccount?.usage)
+            if let short = windows.short?.used_percent {
+                let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
+                appendWindow(symbol: "hourglass", remaining: remaining, allowed: allowed)
+            }
+            if let weekly = windows.weekly?.used_percent {
+                let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                if windows.short != nil {
+                    title.append(NSAttributedString(
+                        string: "   ",
+                        attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                    ))
+                }
+                appendWindow(symbol: "calendar", remaining: remaining, allowed: allowed)
+            }
+            if windows.short == nil && windows.weekly == nil {
+                title.append(NSAttributedString(
+                    string: "…",
+                    attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                ))
+            }
+        } else {
+            title.append(NSAttributedString(
+                string: "KS",
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+            ))
+        }
+
+        // Antigravity section
+        if let agStatus = antigravityController.status,
+           let profiles = agStatus.profiles,
+           !profiles.isEmpty {
+            let activeProfileID = agStatus.active?["cli"] ?? agStatus.active?["ide"] ?? agStatus.active?.values.first
+            if let activeProfile = profiles.first(where: { $0.id == activeProfileID }) ?? profiles.first {
+                let agName = shortAccountName(email: activeProfile.email, slot: nil)
+
+                title.append(NSAttributedString(
+                    string: " | ",
+                    attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                ))
+                title.append(NSAttributedString(
+                    string: agName + " ",
+                    attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+                ))
+
+                let quota = activeProfile.quota
+                let gUsage = (quota?.gemini?.ok == true && quota?.gemini?.stale != true) ? quota?.gemini : nil
+                let tUsage = (quota?.thirdParty?.ok == true && quota?.thirdParty?.stale != true) ? quota?.thirdParty : nil
+
+                let gWindows = menuUsageWindows(gUsage)
+                let tWindows = menuUsageWindows(tUsage)
+
+                var appendedAny = false
+
+                // Gemini (✦)
+                if gWindows.short != nil || gWindows.weekly != nil {
+                    title.append(NSAttributedString(
+                        string: "✦ ",
+                        attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                    ))
+                    let gAllowed = gUsage?.allowed != false
+                    if let short = gWindows.short?.used_percent {
+                        let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
+                        appendWindow(symbol: "hourglass", remaining: remaining, allowed: gAllowed)
+                    }
+                    if let weekly = gWindows.weekly?.used_percent {
+                        let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                        if gWindows.short != nil {
+                            title.append(NSAttributedString(
+                                string: "  ",
+                                attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                            ))
+                        }
+                        appendWindow(symbol: "calendar", remaining: remaining, allowed: gAllowed)
+                    }
+                    appendedAny = true
+                }
+
+                // Claude / GPT (⚡)
+                if tWindows.short != nil || tWindows.weekly != nil {
+                    if appendedAny {
+                        title.append(NSAttributedString(
+                            string: "   ",
+                            attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                        ))
+                    }
+                    title.append(NSAttributedString(
+                        string: "⚡ ",
+                        attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                    ))
+                    let tAllowed = tUsage?.allowed != false
+                    if let short = tWindows.short?.used_percent {
+                        let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
+                        appendWindow(symbol: "hourglass", remaining: remaining, allowed: tAllowed)
+                    }
+                    if let weekly = tWindows.weekly?.used_percent {
+                        let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                        if tWindows.short != nil {
+                            title.append(NSAttributedString(
+                                string: "  ",
+                                attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                            ))
+                        }
+                        appendWindow(symbol: "calendar", remaining: remaining, allowed: tAllowed)
+                    }
+                    appendedAny = true
+                }
+
+                if !appendedAny {
+                    title.append(NSAttributedString(
+                        string: "…",
+                        attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                    ))
+                }
+            }
+        }
+
+        button.attributedTitle = title
+    }
+
+    /// Smooth green→red tint by how much of the window is left (100% → green, 0% → red).
+    private func usageColor(remaining: Int, allowed: Bool = true) -> NSColor {
+        if !allowed { return .systemRed }
+        let r = CGFloat(max(0, min(100, remaining)))
+        return NSColor(hue: r / 100.0 * 0.33, saturation: 0.9, brightness: 0.95, alpha: 1.0)
+    }
+
+    /// An SF Symbol, palette-tinted to `color`, as an inline attachment sized to the
+    /// menu-bar font and vertically centered on its cap height.
+    private func symbolText(_ name: String, color: NSColor, font: NSFont) -> NSAttributedString {
+        let config = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .regular)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [color]))
+        guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(config) else {
+            return NSAttributedString(string: "")
+        }
+        image.isTemplate = false
+        let attachment = NSTextAttachment()
+        attachment.image = image
+        attachment.bounds = CGRect(x: 0, y: (font.capHeight - image.size.height) / 2.0,
+                                   width: image.size.width, height: image.size.height)
+        return NSAttributedString(attachment: attachment)
+    }
+
+    // MARK: Popover
+
+    private func setupPopover(controller: StatusController) {
+        let hosting = NSHostingController(rootView: PanelView(state: state, controller: controller, antigravityController: antigravityController).noFocusRing())
+        hosting.sizingOptions = .preferredContentSize
+        popover.contentViewController = hosting
+        popover.behavior = .applicationDefined
+        popover.animates = false
+        popover.delegate = self
+    }
+
+    @objc private func togglePopover(_ sender: Any?) {
+        if popover.isShown {
+            closePopover(sender)
+        } else {
+            showPopover(sender)
+        }
+    }
+
+    private func showPopover(_ sender: Any?) {
+        guard let button = statusItem?.button else { return }
+        controller?.refreshIfNeeded(minInterval: 15, silent: true)
+        antigravityController.refreshIfNeeded(minInterval: 15, silent: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+        NSApp.activate(ignoringOtherApps: true)
+        startEventMonitors()
+    }
+
+    private func closePopover(_ sender: Any?) {
+        stopEventMonitors()
+        if popover.isShown {
+            popover.performClose(sender)
+        }
+    }
+
+    private func startEventMonitors() {
+        stopEventMonitors()
+        eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self, self.popover.isShown else { return }
+                let mouseLocation = NSEvent.mouseLocation
+                if let button = self.statusItem?.button, let window = button.window {
+                    let buttonRect = window.convertToScreen(button.bounds).insetBy(dx: -12, dy: -12)
+                    let windowRect = window.frame.insetBy(dx: -12, dy: -12)
+                    if buttonRect.contains(mouseLocation) || windowRect.contains(mouseLocation) {
+                        return
+                    }
+                }
+                if let popoverWindow = self.popover.contentViewController?.view.window {
+                    if popoverWindow.frame.insetBy(dx: -8, dy: -8).contains(mouseLocation) {
+                        return
+                    }
+                }
+                self.closePopover(nil)
+            }
+        }
+        keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 { // ESC key
+                Task { @MainActor in
+                    self?.closePopover(nil)
+                }
+                return nil
+            }
+            return event
+        }
+    }
+
+    private func stopEventMonitors() {
+        if let monitor = eventMonitor {
+            NSEvent.removeMonitor(monitor)
+            eventMonitor = nil
+        }
+        if let monitor = keyEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyEventMonitor = nil
+        }
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        stopEventMonitors()
+    }
+
+    // MARK: Timers (serial per-kind: controller skips overlapping ticks)
+
+    private func startTimers() {
+        statusTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.controller?.refreshStatus(silent: true)
+                self?.antigravityController.refresh(silent: true)
+            }
+        }
+    }
+
+    // MARK: auth.json watcher
+
+    private func startAuthWatcher() {
+        let authPath = NSHomeDirectory() + "/.codex/auth.json"
+        let fileWatcher = AuthFileWatcher(path: authPath)
+        fileWatcher.onChange = { [weak self] in
+            self?.controller?.refreshStatus(silent: true)
+        }
+        fileWatcher.start()
+        watcher = fileWatcher
+    }
+
+    // MARK: UNUserNotificationCenterDelegate
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
+    }
+}
+
+// MARK: - Entry point
+
+MainActor.assumeIsolated {
+    let app = NSApplication.shared
+    let appDelegate = AppDelegate()
+    app.delegate = appDelegate
+    app.setActivationPolicy(.accessory)
+    app.run()
+}

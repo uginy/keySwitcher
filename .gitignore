@@ -1,0 +1,30 @@
+# Build & Distribution output
+dist/
+build/
+.build/
+.swift-cache/
+*.dSYM/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Runtime / Local data
+runtime/
+.codex/
+
+# IDE / Agent configs
+.omp/
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
