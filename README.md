@@ -12,6 +12,10 @@
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License">
 </p>
 
+<p align="center">
+  <img src="assets/preview.png" alt="KeySwitcher macOS Menu Bar Preview" width="580">
+</p>
+
 ---
 
 ## Features
