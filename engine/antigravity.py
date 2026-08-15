@@ -9,6 +9,7 @@ token values are never returned in command JSON.
 import base64
 import concurrent.futures
 import contextlib
+from datetime import datetime
 import fcntl
 import hashlib
 import http.server
@@ -54,8 +55,13 @@ SHARED_APP_BUNDLE_ID = "com.google.antigravity"
 SHARED_APP_PATH = Path("/Applications/Antigravity.app")
 
 PROFILE_SERVICE = "com.eugene.keyswitcher.antigravity"
+SNAPSHOT_ACCOUNT = "vault"
 CLI_SERVICE = "gemini"
 CLI_ACCOUNT = "antigravity"
+CLI_CREDENTIALS_FILE = Path(os.environ.get(
+    "KEYSWITCHER_ANTIGRAVITY_CLI_FILE",
+    HOME / ".gemini/oauth_creds.json",
+)).expanduser()
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 TARGETS = {"cli", "ide"}
 LIMIT_EXHAUSTED_PERCENT = 99.0
@@ -184,6 +190,43 @@ def profile_account(profile_id, target):
     return "%s:%s" % (profile_id, target)
 
 
+def load_snapshot_vault():
+    raw = run_keychain("get", PROFILE_SERVICE, SNAPSHOT_ACCOUNT, allow_missing=True)
+    if raw is None:
+        return {}
+    try:
+        vault = json.loads(raw.decode())
+    except Exception as exc:
+        raise RuntimeError("Saved profile vault is unreadable") from exc
+    if not isinstance(vault, dict):
+        raise RuntimeError("Saved profile vault is invalid")
+    return vault
+
+
+def write_snapshot_vault(vault):
+    if vault:
+        run_keychain(
+            "set", PROFILE_SERVICE, SNAPSHOT_ACCOUNT,
+            json.dumps(vault, separators=(",", ":")).encode(),
+        )
+    else:
+        run_keychain("delete", PROFILE_SERVICE, SNAPSHOT_ACCOUNT, allow_missing=True)
+
+
+def save_vault_snapshot(profile_id, target, snapshot):
+    vault = load_snapshot_vault()
+    vault[profile_account(profile_id, target)] = snapshot
+    write_snapshot_vault(vault)
+
+
+def delete_vault_snapshot(profile_id, target):
+    vault = load_snapshot_vault()
+    key = profile_account(profile_id, target)
+    if key in vault:
+        del vault[key]
+        write_snapshot_vault(vault)
+
+
 def profile_id_for_email(email):
     return hashlib.sha256(email.strip().lower().encode()).hexdigest()[:16]
 
@@ -214,8 +257,7 @@ def encode_ide_oauth_state(credentials):
 
 def save_snapshot(email, target, snapshot, activate=True):
     profile_id = profile_id_for_email(email)
-    secret = json.dumps(snapshot, separators=(",", ":")).encode()
-    run_keychain("set", PROFILE_SERVICE, profile_account(profile_id, target), secret)
+    save_vault_snapshot(profile_id, target, snapshot)
 
     state = load_state()
     profile = next((item for item in state["profiles"] if item.get("id") == profile_id), None)
@@ -235,15 +277,22 @@ def save_snapshot(email, target, snapshot, activate=True):
 
 
 def load_snapshot(profile_id, target):
-    raw = run_keychain(
-        "get", PROFILE_SERVICE, profile_account(profile_id, target), allow_missing=True,
-    )
+    key = profile_account(profile_id, target)
+    vault = load_snapshot_vault()
+    snapshot = vault.get(key)
+    if snapshot is not None:
+        return snapshot
+
+    raw = run_keychain("get", PROFILE_SERVICE, key, allow_missing=True)
     if raw is None:
         raise RuntimeError("Profile has no %s credentials" % target)
     try:
-        return json.loads(raw.decode())
+        snapshot = json.loads(raw.decode())
     except Exception as exc:
         raise RuntimeError("Saved profile is unreadable") from exc
+    save_vault_snapshot(profile_id, target, snapshot)
+    run_keychain("delete", PROFILE_SERVICE, key, allow_missing=True)
+    return snapshot
 
 
 def nested_emails(value):
@@ -322,6 +371,35 @@ def decode_cli_payload(raw):
     return payload
 
 
+def write_cli_credentials_file(snapshot):
+    credentials = snapshot_credentials(snapshot)
+    existing = {}
+    if CLI_CREDENTIALS_FILE.is_file():
+        with contextlib.suppress(OSError, ValueError):
+            existing = json.loads(CLI_CREDENTIALS_FILE.read_text())
+    if not isinstance(existing, dict):
+        existing = {}
+
+    payload = {
+        "access_token": credentials["access_token"],
+        "refresh_token": credentials["refresh_token"],
+        "scope": existing.get("scope") or " ".join((*IDE_OAUTH_SCOPES, "openid")),
+        "token_type": credentials.get("token_type", "Bearer"),
+        "expiry_date": 0,
+    }
+    if credentials.get("id_token"):
+        payload["id_token"] = credentials["id_token"]
+    expiry = credentials.get("expiry")
+    if expiry:
+        try:
+            payload["expiry_date"] = int(datetime.fromisoformat(
+                expiry.replace("Z", "+00:00")
+            ).timestamp() * 1000)
+        except ValueError:
+            pass
+    write_json_atomic(CLI_CREDENTIALS_FILE, payload)
+
+
 def cli_email_from_log():
     log_dir = HOME / ".gemini/antigravity-cli/log"
     pattern = re.compile(r"applyAuthResult: email=([^,\s]+)")
@@ -378,6 +456,16 @@ def snapshot_credentials(snapshot):
     if snapshot.get("kind") == "keychain":
         return antigravity_quota.extract_cli_credentials(snapshot.get("payload", ""))
     raise RuntimeError("Saved Antigravity credential is invalid")
+
+
+def refresh_ide_snapshot(snapshot):
+    credentials = snapshot_credentials(snapshot)
+    credentials["access_token"] = antigravity_quota.refresh_access_token(
+        credentials["refresh_token"], "antigravity/2.3.1 darwin/arm64",
+    )
+    rows = dict(snapshot["rows"])
+    rows["antigravityUnifiedStateSync.oauthToken"] = encode_ide_oauth_state(credentials)
+    return {**snapshot, "rows": rows}
 
 
 def snapshot_digest(snapshot):
@@ -634,12 +722,15 @@ def clear_gui_auth(target):
 def switch_gui(profile_id, target, snapshot):
     if snapshot.get("kind") != "sqlite" or not isinstance(snapshot.get("rows"), dict):
         raise RuntimeError("Saved GUI snapshot is invalid")
+    if os.environ.get("KEYSWITCHER_ANTIGRAVITY_SKIP_TOKEN_REFRESH") != "1":
+        snapshot = refresh_ide_snapshot(snapshot)
     rows = {key: value for key, value in snapshot["rows"].items() if key in AUTH_KEYS}
     if "antigravityUnifiedStateSync.oauthToken" not in rows:
         raise RuntimeError("Saved GUI snapshot has no OAuth token")
     path = DB_PATHS[target]
     if not path.is_file():
         raise RuntimeError("%s state.vscdb not found" % target)
+    save_vault_snapshot(profile_id, target, snapshot)
 
     bundle_id = BUNDLE_IDS[target]
     was_running = app_is_running(bundle_id)
@@ -701,6 +792,7 @@ def switch(profile_id, target):
             stop_app(SHARED_APP_BUNDLE_ID)
         try:
             run_keychain("set", CLI_SERVICE, CLI_ACCOUNT, snapshot["payload"].encode())
+            write_cli_credentials_file(snapshot)
             state = load_state()
             state["active"][target] = profile_id
             write_json_atomic(STATE_FILE, state)
@@ -898,6 +990,7 @@ def remove_profile_target(profile_id, target):
     profile = next((item for item in state["profiles"] if item.get("id") == profile_id), None)
     if not profile or target not in profile.get("targets", []):
         raise RuntimeError("Antigravity profile is not saved for %s" % target)
+    delete_vault_snapshot(profile_id, target)
     run_keychain(
         "delete", PROFILE_SERVICE, profile_account(profile_id, target), allow_missing=True,
     )
@@ -956,11 +1049,9 @@ def sync_active_identities(state, include_cli=False):
             profile["email"] = email
             profile["targets"] = sorted(set(profile.get("targets", [])) | {target})
             profile["updated_at"] = now
-            run_keychain(
-                "set", PROFILE_SERVICE, profile_account(new_profile_id, target),
-                json.dumps(snapshot, separators=(",", ":")).encode(),
-            )
+            save_vault_snapshot(new_profile_id, target, snapshot)
             if old_snapshot_is_mislabeled:
+                delete_vault_snapshot(old_profile_id, target)
                 run_keychain(
                     "delete", PROFILE_SERVICE, profile_account(old_profile_id, target),
                     allow_missing=True,

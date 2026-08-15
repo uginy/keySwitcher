@@ -10,6 +10,7 @@ import tempfile
 import time
 from pathlib import Path
 
+import antigravity
 import antigravity_quota
 
 ENGINE = Path(__file__).with_name("antigravity.py")
@@ -138,6 +139,7 @@ def main():
         helper = root / "fake-keychain"
         cli = root / "agy"
         keychain_store = root / "keychain.json"
+        vault_key = "com.eugene.keyswitcher.antigravity|vault"
         original_ide_oauth = make_db(
             ide_db, "ide@example.com", "ide-a", auth_status_email="stale@example.com",
         )
@@ -161,9 +163,11 @@ def main():
             "HOME": str(root),
             "KEYSWITCHER_ANTIGRAVITY_ROOT": str(root / "state"),
             "KEYSWITCHER_ANTIGRAVITY_IDE_DB": str(ide_db),
+            "KEYSWITCHER_ANTIGRAVITY_CLI_FILE": str(root / ".gemini/oauth_creds.json"),
             "KEYSWITCHER_ANTIGRAVITY_KEYCHAIN_HELPER": str(helper),
             "KEYSWITCHER_ANTIGRAVITY_CLI": str(cli),
             "KEYSWITCHER_ANTIGRAVITY_SKIP_APP_CONTROL": "1",
+            "KEYSWITCHER_ANTIGRAVITY_SKIP_TOKEN_REFRESH": "1",
             "KEYSWITCHER_ANTIGRAVITY_SKIP_QUOTA": "1",
             "FAKE_KEYCHAIN_STORE": str(keychain_store),
         })
@@ -171,6 +175,20 @@ def main():
         credentials = antigravity_quota.extract_gui_credentials(original_ide_oauth)
         assert credentials["access_token"].count(".") == 2
         assert credentials["refresh_token"] == "ide-a-refresh"
+        original_refresh = antigravity.antigravity_quota.refresh_access_token
+        antigravity.antigravity_quota.refresh_access_token = lambda *_: "fresh-access"
+        try:
+            refreshed = antigravity.refresh_ide_snapshot({
+                "kind": "sqlite",
+                "rows": {"antigravityUnifiedStateSync.oauthToken": original_ide_oauth},
+            })
+        finally:
+            antigravity.antigravity_quota.refresh_access_token = original_refresh
+        refreshed_credentials = antigravity_quota.extract_gui_credentials_from_rows(
+            refreshed["rows"]
+        )
+        assert refreshed_credentials["access_token"] == "fresh-access"
+        assert refreshed_credentials["refresh_token"] == "ide-a-refresh"
         legacy_oauth = b"".join((
             protobuf_bytes(1, b"legacy-access"),
             protobuf_bytes(2, b"Bearer"),
@@ -210,6 +228,11 @@ def main():
 
         ide_id = ide_capture["profile"]["id"]
         wrong_id = hashlib.sha256(b"stale@example.com").hexdigest()[:16]
+        keychain = json.loads(keychain_store.read_text())
+        assert set(keychain) == {"gemini|antigravity", vault_key}
+        assert set(json.loads(keychain[vault_key])) == {
+            ide_id + ":ide", cli_capture["profile"]["id"] + ":cli",
+        }
         state_path = root / "state/profiles.json"
         saved_state = json.loads(state_path.read_text())
         ide_profile = next(item for item in saved_state["profiles"] if item["id"] == ide_id)
@@ -218,10 +241,9 @@ def main():
         saved_state["active"]["ide"] = wrong_id
         saved_state["identity_checked"] = {"ide": int(time.time())}
         state_path.write_text(json.dumps(saved_state))
-        keychain = json.loads(keychain_store.read_text())
-        correct_key = "com.eugene.keyswitcher.antigravity|%s:ide" % ide_id
-        wrong_key = "com.eugene.keyswitcher.antigravity|%s:ide" % wrong_id
-        keychain[wrong_key] = keychain.pop(correct_key)
+        vault = json.loads(keychain[vault_key])
+        vault[wrong_id + ":ide"] = vault.pop(ide_id + ":ide")
+        keychain[vault_key] = json.dumps(vault)
         keychain_store.write_text(json.dumps(keychain))
         _, corrected_status = run_engine(env, "status")
         assert corrected_status["active"]["ide"] == ide_id
@@ -241,8 +263,20 @@ def main():
         assert (root / "state/backups/ide.state.vscdb").is_file()
 
         cli_id = cli_capture["profile"]["id"]
+        keychain = json.loads(keychain_store.read_text())
+        vault = json.loads(keychain[vault_key])
+        legacy_cli_key = "com.eugene.keyswitcher.antigravity|%s:cli" % cli_id
+        keychain[legacy_cli_key] = json.dumps(vault.pop(cli_id + ":cli"))
+        keychain[vault_key] = json.dumps(vault)
+        keychain_store.write_text(json.dumps(keychain))
         _, switched_cli = run_engine(env, "switch", cli_id, "cli")
         assert switched_cli["ok"]
+        keychain = json.loads(keychain_store.read_text())
+        assert legacy_cli_key not in keychain
+        assert cli_id + ":cli" in json.loads(keychain[vault_key])
+        cli_file = json.loads((root / ".gemini/oauth_creds.json").read_text())
+        assert cli_file["refresh_token"] == "fake-refresh-token"
+        assert cli_file["expiry_date"] > 0
 
         _, status = run_engine(env, "status")
         assert status["ok"] and len(status["profiles"]) == 2
@@ -271,9 +305,9 @@ def main():
         keychain = json.loads(keychain_store.read_text())
         assert keychain["gemini|antigravity"] == cli_before_add
         assert json.loads(state_path.read_text())["active"]["cli"] == cli_id
-        saved_cli_snapshot = json.loads(keychain[
-            "com.eugene.keyswitcher.antigravity|%s:cli" % finished["profile"]["id"]
-        ])
+        saved_cli_snapshot = json.loads(keychain[vault_key])[
+            finished["profile"]["id"] + ":cli"
+        ]
         saved_cli = json.loads(saved_cli_snapshot["payload"])
         assert saved_cli["email"] == "new@example.com"
         assert saved_cli["token"]["refresh_token"] == "cli-b-refresh"
@@ -324,9 +358,9 @@ def main():
         assert read_row(ide_db, "antigravityUnifiedStateSync.oauthToken") == ide_before_add
         assert json.loads(state_path.read_text())["active"]["ide"] == ide_id
         keychain = json.loads(keychain_store.read_text())
-        saved_ide_snapshot = json.loads(keychain[
-            "com.eugene.keyswitcher.antigravity|%s:ide" % finished_ide["profile"]["id"]
-        ])
+        saved_ide_snapshot = json.loads(keychain[vault_key])[
+            finished_ide["profile"]["id"] + ":ide"
+        ]
         saved_ide = antigravity_quota.extract_gui_credentials_from_rows(
             saved_ide_snapshot["rows"]
         )
@@ -359,6 +393,7 @@ def main():
             for profile in status["profiles"]
         )
         assert "gemini|antigravity" in json.loads(keychain_store.read_text())
+        assert cli_id + ":cli" not in json.loads(keychain_store.read_text())[vault_key]
         _, switched_cli = run_engine(env, "switch", finished["profile"]["id"], "cli")
         assert switched_cli["ok"]
 
