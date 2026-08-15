@@ -1,11 +1,11 @@
 # KeySwitcher
 
 <p align="center">
-  <b>A lightweight, native macOS menu bar switcher and live quota monitor for OpenAI Codex and Google Antigravity (CLI & IDE).</b>
+  <b>A lightweight native switcher and live quota monitor for OpenAI Codex and Google Antigravity (CLI & IDE). macOS menu bar and Windows system tray.</b>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/platform-macOS%2013%2B-black?style=flat-square&logo=apple" alt="macOS 13+">
+  <img src="https://img.shields.io/badge/platform-macOS%2013%2B%20%7C%20Windows%2010%2B-black?style=flat-square" alt="macOS 13+ / Windows 10+">
   <img src="https://img.shields.io/badge/Swift-5.9%20%7C%20SwiftUI-orange?style=flat-square&logo=swift" alt="SwiftUI">
   <img src="https://img.shields.io/badge/Python-3.9%2B%20(stdlib%20only)-blue?style=flat-square&logo=python" alt="Python 3">
   <img src="https://img.shields.io/badge/Dependencies-0%20external-brightgreen?style=flat-square" alt="Zero Dependencies">
@@ -57,7 +57,9 @@
 
 ### Installation
 
-Clone the repository and run the automated installer:
+Clone the repository and run the automated installer.
+
+**macOS**
 
 ```bash
 git clone https://github.com/uginy/keySwitcher.git
@@ -67,13 +69,24 @@ cd keySwitcher
 
 The script compiles the native binary, bundles the engine into `KeySwitcher.app`, signs it with your local development identity, installs it to `/Applications`, and launches the menu bar item.
 
+**Windows**
+
+```powershell
+git clone https://github.com/uginy/keySwitcher.git
+cd keySwitcher
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+The script copies the Python engine and tray app to `%LOCALAPPDATA%\KeySwitcher`, imports the current Codex session as slot 1 if needed, creates Start Menu / Startup shortcuts, and launches the tray icon. Requires Python 3.9+ on PATH. No `pip` packages.
+
 ### Updating
 
 To pull the latest changes and rebuild:
 
 ```bash
 git pull
-./update.sh
+./update.sh          # macOS
+.\update.ps1         # Windows
 ```
 
 ### Uninstallation
@@ -81,28 +94,29 @@ git pull
 To cleanly remove the application and runtime metadata:
 
 ```bash
-./uninstall.sh
+./uninstall.sh       # macOS
+.\uninstall.ps1      # Windows
 ```
-*(Token slots in `~/.codex/accounts/` and Keychain items are preserved by default).*
+*(Token slots in `~/.codex/accounts/` and Keychain / Credential Manager items are preserved by default).*
 
 ---
 
 ## Architecture
 
 ```
-[ macOS Menu Bar ]
-       │  (AppKit + SwiftUI Frontend)
+[ macOS Menu Bar | Windows tray ]
+       │  (AppKit + SwiftUI  /  Python + Tk + NotifyIcon)
        ▼
- KeySwitcher.app
+ KeySwitcher
        │
        ├──► OpenAI Codex
-       │       ├─► Slots:  ~/.codex/accounts/auth_*.json (chmod 600)
+       │       ├─► Slots:  ~/.codex/accounts/auth_*.json
        │       ├─► Active: ~/.codex/auth.json
        │       └─► API:    chatgpt.com/backend-api/wham/usage
        │
        └──► Google Antigravity
-               ├─► CLI:    macOS Keychain (service=gemini)
-               ├─► IDE:    ~/Library/Application Support/Antigravity/User/globalStorage/state.vscdb
+               ├─► CLI:    macOS Keychain / Windows Credential Manager (service=gemini)
+               ├─► IDE:    state.vscdb (Application Support on macOS, %APPDATA% on Windows)
                └─► API:    cloudcode-pa.googleapis.com (loadCodeAssist)
 ```
 
@@ -156,9 +170,17 @@ python3 engine/antigravity.py begin-login cli
 ## Requirements
 
 - **macOS**: 13.0 (Ventura) or later (Apple Silicon M1-M4 & Intel x86_64).
-- **Xcode Command Line Tools**: `xcode-select --install` (for `swiftc`).
-- **Python**: 3.9+ (pre-installed on macOS).
-- **Optional**: Accessibility permissions for KeySwitcher (`System Settings -> Privacy & Security -> Accessibility`) to enable smooth Codex window reload (`Cmd+R`).
+- **Windows**: 10 or 11, 64-bit. Codex desktop is the Microsoft Store `OpenAI.Codex` app. Antigravity IDE lives in `%LOCALAPPDATA%\Programs\Antigravity`.
+- **Xcode Command Line Tools** (macOS only): `xcode-select --install` (for `swiftc`).
+- **Python**: 3.9+ (pre-installed on macOS; install from python.org on Windows).
+- **Optional (macOS)**: Accessibility permissions for KeySwitcher (`System Settings -> Privacy & Security -> Accessibility`) to enable smooth Codex window reload (`Cmd+R`).
+
+### Windows notes
+
+- The frontend is a Python stdlib tray app (`app/windows/keyswitcher_app.py`), not the Swift menu bar binary.
+- Codex desktop restart targets the Microsoft Store `OpenAI.Codex` package only. ChatGPT Classic is left alone.
+- Antigravity CLI / vault credentials use Windows Credential Manager instead of the macOS Keychain helper.
+- Engine CLI (`engine/keyswitcher.py`, `engine/antigravity.py`) is the same contract as on macOS.
 
 ---
 

@@ -20,6 +20,11 @@ runtime/
 .vscode/
 .idea/
 
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
 # macOS
 .DS_Store
 .AppleDouble

@@ -16,6 +16,7 @@ if [[ -d "$XCODE_SDK" ]]; then
 fi
 
 echo "==> Running engine self-checks"
+/usr/bin/python3 "$ROOT/engine/test_compat.py"
 /usr/bin/python3 "$ROOT/engine/test_keyswitcher.py"
 /usr/bin/python3 "$ROOT/engine/test_antigravity.py"
 
