@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/preview.png" alt="KeySwitcher macOS Menu Bar Preview" width="580">
+  <img src="https://github.com/uginy/keySwitcher/releases/download/v1.2.0/preview.png" alt="KeySwitcher macOS Menu Bar Preview" width="580">
 </p>
 
 ---
