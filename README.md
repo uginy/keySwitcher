@@ -1,5 +1,7 @@
 # KeySwitcher
 
+This fork makes [uginy/keySwitcher](https://github.com/uginy/keySwitcher) work on Windows.
+
 <p align="center">
   <b>A lightweight native switcher and live quota monitor for OpenAI Codex and Google Antigravity (CLI & IDE). macOS menu bar and Windows system tray.</b>
 </p>
