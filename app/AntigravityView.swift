@@ -188,7 +188,8 @@ final class AntigravityController: ObservableObject {
         if !silent {
             isLoading = true
         }
-        engine.run(["antigravity", "status"], as: AntigravityResponse.self) { [weak self] result in
+        let args = silent ? ["antigravity", "status"] : ["antigravity", "status", "--sync-cli"]
+        engine.run(args, as: AntigravityResponse.self) { [weak self] result in
             guard let self else { return }
             self.lastRefreshTime = Date()
             if !silent {

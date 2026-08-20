@@ -1007,12 +1007,14 @@ def remove_profile_target(profile_id, target):
 def sync_active_identities(state, include_cli=None):
     """Refresh active profile emails from live app/CLI state.
 
-    CLI reads hit the shared login-keychain item service=gemini. When a stable
-    keychain helper is available (or on platforms without interactive keychain
-    prompts), CLI is synced alongside IDE sqlite state.
+    IDE state is synced from local sqlite (state.vscdb) without Keychain prompts.
+    CLI reads hit the shared login-keychain item service=gemini, which can trigger
+    interactive Keychain prompts if the CLI refreshed its OAuth token. Routine
+    status polls leave include_cli=False and rely on KeySwitcher-owned snapshots;
+    explicit user actions (manual refresh, capture, switch) pass include_cli=True.
     """
     if include_cli is None:
-        include_cli = keychain_helper_available()
+        include_cli = os.environ.get("KEYSWITCHER_ANTIGRAVITY_SYNC_CLI") == "1"
     now = int(time.time())
     changed = False
     for target, old_profile_id in list(state["active"].items()):
@@ -1080,14 +1082,15 @@ def sync_active_identities(state, include_cli=None):
 def profile_quota_source(profile, state):
     profile_id = profile.get("id")
     # Prefer KeySwitcher-owned snapshots (service=com.eugene.keyswitcher.antigravity).
-    # Live CLI state reads service=gemini and triggers Keychain prompts on every poll.
+    # Live CLI state reads service=gemini and triggers Keychain prompts on poll,
+    # so we never read live CLI state as a fallback during background quota checks.
     for target in profile.get("targets", []):
         try:
             return snapshot_credentials(load_snapshot(profile_id, target))
         except Exception:
             continue
     for target, active_profile_id in state["active"].items():
-        if active_profile_id != profile_id:
+        if active_profile_id != profile_id or target == "cli":
             continue
         try:
             snapshot = read_current_snapshot(target)
@@ -1307,9 +1310,9 @@ def auto_check():
     return result
 
 
-def status():
+def status(sync_cli=False):
     state = load_state()
-    sync_active_identities(state)
+    sync_active_identities(state, include_cli=sync_cli)
     refresh_quotas(state)
     targets = {
         "ide": {"available": DB_PATHS["ide"].is_file(), "installed": APP_PATHS["ide"].is_dir()},
@@ -1341,7 +1344,14 @@ def main(args):
     try:
         with exclusive_lock():
             if not args or args[0] == "status":
-                return status()
+                sync_cli = "--sync-cli" in args or os.environ.get("KEYSWITCHER_ANTIGRAVITY_SYNC_CLI") == "1"
+                return status(sync_cli=sync_cli)
+            if args[0] == "sync":
+                target = args[1] if len(args) > 1 else "all"
+                state = load_state()
+                include_cli = target in ("all", "cli")
+                sync_active_identities(state, include_cli=include_cli)
+                return status(sync_cli=False)
             if args[0] == "capture" and len(args) == 2:
                 return capture(args[1])
             if args[0] == "switch" and len(args) == 3:
@@ -1360,7 +1370,7 @@ def main(args):
                 return set_autoswitch(args[1], args[2] == "on")
             if args[0] == "auto-check" and len(args) == 1:
                 return auto_check()
-            return {"ok": False, "error": "usage: antigravity <status|capture TARGET|switch PROFILE TARGET|begin-login TARGET|finish-login TARGET|cancel-login TARGET|remove PROFILE TARGET|reorder TARGET PROFILE...|set-auto TARGET on|off|auto-check>"}
+            return {"ok": False, "error": "usage: antigravity <status [--sync-cli]|sync [TARGET]|capture TARGET|switch PROFILE TARGET|begin-login TARGET|finish-login TARGET|cancel-login TARGET|remove PROFILE TARGET|reorder TARGET PROFILE...|set-auto TARGET on|off|auto-check>"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 

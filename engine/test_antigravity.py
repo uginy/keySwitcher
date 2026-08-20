@@ -495,7 +495,8 @@ def main():
         _, ide_disabled = run_engine(env, "set-auto", "ide", "off")
         assert ide_disabled["autoswitch"] == {"cli": False, "ide": False}
 
-        # Verify live external CLI/App account switch is picked up by status
+        # Verify routine background status does not probe live CLI keychain,
+        # while explicit --sync-cli (or sync command) picks up live external changes
         keychain = json.loads(keychain_store.read_text())
         keychain["gemini|antigravity"] = json.dumps({
             "email": "external-cli@example.com",
@@ -507,8 +508,14 @@ def main():
             },
         })
         keychain_store.write_text(json.dumps(keychain))
-        _, status_synced = run_engine(env, "status")
+
+        # Routine background status should leave active CLI unchanged (no Keychain probe)
+        _, status_unsynced = run_engine(env, "status")
         ext_id = hashlib.sha256(b"external-cli@example.com").hexdigest()[:16]
+        assert status_unsynced["active"]["cli"] != ext_id
+
+        # Explicit status with --sync-cli picks up external CLI change
+        _, status_synced = run_engine(env, "status", "--sync-cli")
         assert status_synced["active"]["cli"] == ext_id
         assert any(p["id"] == ext_id and p["email"] == "external-cli@example.com" for p in status_synced["profiles"])
 
