@@ -495,6 +495,23 @@ def main():
         _, ide_disabled = run_engine(env, "set-auto", "ide", "off")
         assert ide_disabled["autoswitch"] == {"cli": False, "ide": False}
 
+        # Verify live external CLI/App account switch is picked up by status
+        keychain = json.loads(keychain_store.read_text())
+        keychain["gemini|antigravity"] = json.dumps({
+            "email": "external-cli@example.com",
+            "auth_method": "consumer",
+            "token": {
+                "access_token": fake_jwt("external-cli@example.com", "tok-ext"),
+                "refresh_token": "ext-refresh",
+                "expiry": "2099-01-01T00:00:00Z",
+            },
+        })
+        keychain_store.write_text(json.dumps(keychain))
+        _, status_synced = run_engine(env, "status")
+        ext_id = hashlib.sha256(b"external-cli@example.com").hexdigest()[:16]
+        assert status_synced["active"]["cli"] == ext_id
+        assert any(p["id"] == ext_id and p["email"] == "external-cli@example.com" for p in status_synced["profiles"])
+
         keychain_probe = root / "keychain-probe"
         probe_helper = root / "probe-helper"
         probe_helper.write_text(

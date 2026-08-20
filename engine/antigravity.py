@@ -1004,14 +1004,15 @@ def remove_profile_target(profile_id, target):
     return {"ok": True, "profile_id": profile_id, "target": target}
 
 
-def sync_active_identities(state, include_cli=False):
+def sync_active_identities(state, include_cli=None):
     """Refresh active profile emails from live app/CLI state.
 
-    CLI reads hit the shared login-keychain item service=gemini. That prompts
-    unless Always Allow stuck on a stable helper signature — so routine status
-    skips CLI and only checks IDE sqlite. Pass include_cli=True after capture,
-    switch, or login.
+    CLI reads hit the shared login-keychain item service=gemini. When a stable
+    keychain helper is available (or on platforms without interactive keychain
+    prompts), CLI is synced alongside IDE sqlite state.
     """
+    if include_cli is None:
+        include_cli = keychain_helper_available()
     now = int(time.time())
     changed = False
     for target, old_profile_id in list(state["active"].items()):
