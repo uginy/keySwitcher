@@ -103,6 +103,13 @@ else
     echo "WARNING: $ROOT/engine/antigravity_quota.py not found — Antigravity quota lookup will be unavailable" >&2
 fi
 
+if [[ -f "$ROOT/engine/compat.py" ]]; then
+    echo "==> Bundling engine/compat.py into Resources"
+    cp "$ROOT/engine/compat.py" "$RESOURCES_DIR/compat.py"
+else
+    echo "WARNING: $ROOT/engine/compat.py not found — the engine will fail to start" >&2
+fi
+
 if [[ -f "$ROOT/engine/rotator.py" ]]; then
     echo "==> Bundling engine/rotator.py into Resources"
     cp "$ROOT/engine/rotator.py" "$RESOURCES_DIR/rotator.py"
