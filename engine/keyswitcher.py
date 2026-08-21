@@ -4,9 +4,8 @@
 This is the single source of truth the Swift menu bar app shells out to. It
 manages the saved Codex account slots in ~/.codex/accounts/auth_N.json,
 reports per-account rate-limit usage from the ChatGPT wham/usage API,
-refreshes expired OAuth access tokens for *inactive* slots, switches the
-active account through the bundled rotator.py, and controls the
-com.codex.rotator LaunchAgent.
+refreshes expired OAuth access tokens for *inactive* slots, and switches
+the active account through the bundled rotator.py.
 
 Contract: every invocation prints exactly ONE JSON object to stdout (ASCII
 escaped, single line). Exit code is 0 even for handled errors (reported in
@@ -29,6 +28,7 @@ import json
 import os
 import plistlib
 import shutil
+import signal
 import ssl
 import subprocess
 import sys
@@ -378,15 +378,63 @@ def codex_login_env(tmp_home):
     return env
 
 
-def run_codex_login(tmp_home):
+def _kill_login_process(pid):
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        return True
+    except OSError:
+        pass
+    try:
+        os.kill(pid, signal.SIGTERM)
+        return True
+    except OSError:
+        return False
+
+
+def run_codex_login(tmp_home, pidfile=None):
+    """Run interactive `codex login`; record child pid so it can be cancelled."""
     codex_cli = resolve_codex_cli()
     if not codex_cli:
         raise FileNotFoundError("codex CLI not found")
-    return subprocess.run(
+    proc = subprocess.Popen(
         [codex_cli, "login"],
-        capture_output=True, text=True, timeout=RELOGIN_TIMEOUT,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         env=codex_login_env(tmp_home),
+        start_new_session=True,
     )
+    if pidfile is not None:
+        write_json_atomic(pidfile, {"pid": proc.pid}, 0o600)
+    try:
+        stdout, _stderr = proc.communicate(timeout=RELOGIN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        _kill_login_process(proc.pid)
+        proc.communicate()
+        raise
+    finally:
+        if pidfile is not None:
+            with contextlib.suppress(OSError):
+                pidfile.unlink()
+    return proc.returncode, stdout
+
+
+def kill_pending_logins():
+    """Terminate codex login processes started by add/relogin (cancel-add)."""
+    names = ["add.pid"]
+    names += ["relogin_%d.pid" % s["slot"] for s in discover_slots()]
+    stopped = False
+    for name in names:
+        path = KS_DIR / name
+        data = read_json(path) or {}
+        if path.exists():
+            with contextlib.suppress(OSError):
+                path.unlink()
+        if data.get("pid") and _kill_login_process(data["pid"]):
+            stopped = True
+    return stopped
 
 
 def extract_client_id():
@@ -545,7 +593,7 @@ def needs_usage_confirmation(usage, cached):
             previous_used = float(previous.get("used_percent"))
         except (TypeError, ValueError):
             continue
-        if (fresh_used < 0.5 and previous_used >= 1.0
+        if ((fresh_used < 0.5 and previous_used >= 1.0)
                 or previous_used - fresh_used >= 5.0):
             return True
     return False
@@ -690,9 +738,18 @@ def collect_accounts(cfg, state):
     cache = load_cache()
     now = int(time.time())
 
+    # Prune cache entries for accounts that no longer exist in any slot.
+    valid_ids = {s["account_id"] for s in slots if s["account_id"]}
+    if active_id:
+        valid_ids.add(active_id)
+    if valid_ids and any(key not in valid_ids for key in cache):
+        with exclusive_lock():
+            fresh = {k: v for k, v in load_cache().items() if k in valid_ids}
+            write_json_atomic(CACHE_FILE, fresh, 0o600)
+
     results = []
     if slots:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(slots)) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(slots), 8)) as pool:
             results = list(pool.map(
                 lambda s: _gather_one(s, active_id, active_tokens, cfg, state,
                                       cache, now),
@@ -880,17 +937,6 @@ def cmd_autoswitch_check(_args):
     return base
 
 
-def _run_quiet(cmd):
-    try:
-        return subprocess.run(cmd, capture_output=True, timeout=30).returncode
-    except Exception:
-        return -1
-
-
-def cmd_daemon(args):
-    return {"ok": True, "running": False, "error": None}
-
-
 def _coerce_config_value(key, value):
     if key in ("autoswitch_enabled", "notifications"):
         lowered = value.strip().lower()
@@ -970,8 +1016,9 @@ def cmd_relogin(args):
 
     # Launch the interactive OAuth login (opens the browser). Blocking. The
     # tokens land in tmp_home/auth.json, never in the real ~/.codex/auth.json.
+    pidfile = KS_DIR / ("relogin_%d.pid" % slot_number)
     try:
-        proc = run_codex_login(tmp_home)
+        returncode, stdout = run_codex_login(tmp_home, pidfile=pidfile)
     except FileNotFoundError:
         shutil.rmtree(tmp_home, ignore_errors=True)
         base["error"] = "codex CLI not found"
@@ -980,11 +1027,11 @@ def cmd_relogin(args):
         shutil.rmtree(tmp_home, ignore_errors=True)
         base["error"] = "login timed out (no sign-in within %d s)" % RELOGIN_TIMEOUT
         return base
-    if proc.stdout:
-        log.extend(line for line in proc.stdout.splitlines() if line.strip())
-    if proc.returncode != 0:
+    if stdout:
+        log.extend(line for line in stdout.splitlines() if line.strip())
+    if returncode != 0:
         shutil.rmtree(tmp_home, ignore_errors=True)
-        base["error"] = "codex login failed (exit %d)" % proc.returncode
+        base["error"] = "codex login failed (exit %d)" % returncode
         base["log"] = log
         return base
 
@@ -1060,8 +1107,9 @@ def cmd_add(args):
         return base
 
     # Launch the interactive OAuth login (opens the browser). Blocking.
+    pidfile = KS_DIR / "add.pid"
     try:
-        proc = run_codex_login(tmp_home)
+        returncode, stdout = run_codex_login(tmp_home, pidfile=pidfile)
     except FileNotFoundError:
         shutil.rmtree(tmp_home, ignore_errors=True)
         base["error"] = "codex CLI not found"
@@ -1070,11 +1118,11 @@ def cmd_add(args):
         shutil.rmtree(tmp_home, ignore_errors=True)
         base["error"] = "login timed out (no sign-in within %d s)" % RELOGIN_TIMEOUT
         return base
-    if proc.stdout:
-        log.extend(line for line in proc.stdout.splitlines() if line.strip())
-    if proc.returncode != 0:
+    if stdout:
+        log.extend(line for line in stdout.splitlines() if line.strip())
+    if returncode != 0:
         shutil.rmtree(tmp_home, ignore_errors=True)
-        base["error"] = "codex login failed (exit %d)" % proc.returncode
+        base["error"] = "codex login failed (exit %d)" % returncode
         base["log"] = log
         return base
 
@@ -1132,18 +1180,23 @@ def cmd_delete(args):
         # Delete the slot file
         slot_path.unlink()
 
-        # If it was active, delete ~/.codex/auth.json as well
+        # If it was active, back up then delete ~/.codex/auth.json as well
         if deleted_id:
             active_data = read_json(AUTH_FILE)
             active_id = ((active_data or {}).get("tokens") or {}).get("account_id")
-            if active_id == deleted_id:
-                if AUTH_FILE.exists():
-                    AUTH_FILE.unlink()
+            if active_id == deleted_id and AUTH_FILE.exists():
+                shutil.copy2(AUTH_FILE, CODEX_DIR / "auth.json.bak")
+                AUTH_FILE.unlink()
         
         base["ok"] = True
     except Exception as exc:
         base["error"] = "failed to delete slot %d: %s" % (slot_number, exc)
     return base
+
+
+def cmd_cancel_add(_args):
+    """Cancel a running interactive add/relogin browser login."""
+    return {"ok": True, "stopped": kill_pending_logins()}
 
 
 def cmd_antigravity(args):
@@ -1160,8 +1213,8 @@ COMMANDS = {
     "autoswitch-check": cmd_autoswitch_check,
     "relogin": cmd_relogin,
     "add": cmd_add,
+    "cancel-add": cmd_cancel_add,
     "delete": cmd_delete,
-    "daemon": cmd_daemon,
     "config": cmd_config,
     "antigravity": cmd_antigravity,
 }
@@ -1173,7 +1226,7 @@ def main(argv):
     handler = COMMANDS.get(command)
     if handler is None:
         return {"ok": False,
-                "error": "usage: keyswitcher.py <status|switch|autoswitch-check|relogin|add|delete|daemon|config|antigravity> [args]"}
+                "error": "usage: keyswitcher.py <status|switch|autoswitch-check|relogin|add|cancel-add|delete|config|antigravity> [args]"}
     return handler(argv[2:])
 
 

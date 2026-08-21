@@ -127,6 +127,9 @@ python3 engine/keyswitcher.py add
 # Re-authenticate an expired slot without switching
 python3 engine/keyswitcher.py relogin 2
 
+# Cancel a running interactive add/relogin browser login
+python3 engine/keyswitcher.py cancel-add
+
 # Remove slot 2
 python3 engine/keyswitcher.py delete 2
 ```

@@ -65,6 +65,7 @@ CLI_CREDENTIALS_FILE = Path(os.environ.get(
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 TARGETS = {"cli", "ide"}
 LIMIT_EXHAUSTED_PERCENT = 99.0
+ANTIGRAVITY_USER_AGENT = "antigravity/2.3.1 darwin/arm64"
 IDE_OAUTH_SCOPES = (
     "https://www.googleapis.com/auth/cloud-platform",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -461,7 +462,7 @@ def snapshot_credentials(snapshot):
 def refresh_ide_snapshot(snapshot):
     credentials = snapshot_credentials(snapshot)
     credentials["access_token"] = antigravity_quota.refresh_access_token(
-        credentials["refresh_token"], "antigravity/2.3.1 darwin/arm64",
+        credentials["refresh_token"], ANTIGRAVITY_USER_AGENT,
     )
     rows = dict(snapshot["rows"])
     rows["antigravityUnifiedStateSync.oauthToken"] = encode_ide_oauth_state(credentials)
@@ -503,7 +504,7 @@ def google_email(credentials):
         except Exception:
             if attempt == 0:
                 access_token = antigravity_quota.refresh_access_token(
-                    credentials["refresh_token"], "antigravity/2.3.1 darwin/arm64",
+                    credentials["refresh_token"], ANTIGRAVITY_USER_AGENT,
                 )
                 continue
             raise
@@ -954,9 +955,7 @@ def cancel_login(target):
         with contextlib.suppress(OSError):
             Path(result_path).unlink()
     previous_profile_id = pending.get("previous_profile_id")
-    if result_path:
-        pass
-    elif previous_profile_id:
+    if previous_profile_id:
         switch(previous_profile_id, target)
     elif target in DB_PATHS:
         clear_gui_auth(target)

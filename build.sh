@@ -15,6 +15,10 @@ if [[ -d "$XCODE_SDK" ]]; then
     export SDKROOT="$XCODE_SDK"
 fi
 
+echo "==> Running engine self-checks"
+/usr/bin/python3 "$ROOT/engine/test_keyswitcher.py"
+/usr/bin/python3 "$ROOT/engine/test_antigravity.py"
+
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 ARCH="$(uname -m)"

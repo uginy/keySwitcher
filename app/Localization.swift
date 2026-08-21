@@ -79,8 +79,8 @@ public enum L10n {
     }
 
     // Headers & Labels
-    public static var codexHeader: String { isRu ? "Codex KeySwitcher" : "Codex KeySwitcher" }
-    public static var antigravityHeader: String { isRu ? "Antigravity KeySwitcher" : "Antigravity KeySwitcher" }
+    public static var codexHeader: String { "Codex KeySwitcher" }
+    public static var antigravityHeader: String { "Antigravity KeySwitcher" }
     public static var addAccount: String { isRu ? "Добавить аккаунт" : "Add account" }
     public static var refresh: String { isRu ? "Обновить" : "Refresh" }
     public static var settings: String { isRu ? "Настройки приложения" : "App settings" }

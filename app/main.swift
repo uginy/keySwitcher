@@ -70,15 +70,6 @@ struct SwitchResponse: Codable, Sendable {
     var log: [String]?
 }
 
-struct AutoswitchCheckResponse: Codable, Sendable {
-    var ok: Bool?
-    var switched: Bool?
-    var from_slot: Int?
-    var to_slot: Int?
-    var to_email: String?
-    var reason: String?
-}
-
 struct DaemonResponse: Codable, Sendable {
     var ok: Bool?
     var running: Bool?
@@ -140,12 +131,10 @@ final class EngineClient {
     /// Per-command watchdog budget — the engine's worst cases differ a lot:
     /// - status: serialized token refreshes (10s HTTP timeout each) + usage fetch
     /// - switch / autoswitch-check: rotator.py can block on the first Automation/Accessibility prompt
-    /// - daemon on/off: up to three launchctl/pkill calls capped at 30s each inside the engine
     /// - config: pure local file I/O
     private func watchdogTimeout(for args: [String]) -> TimeInterval {
         switch args.first {
         case "config": return 20
-        case "daemon": return 95
         case "relogin": return 330 // interactive browser OAuth: up to 5 min + slack
         case "add": return 330
         case "delete": return 20
@@ -519,10 +508,11 @@ final class StatusController {
     func cancelAddAccount() {
         state.isAdding = false
         state.isSwitching = false
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        process.arguments = ["-f", "codex login"]
-        try? process.run()
+        // Engine kills only the isolated `codex login` child it spawned (pidfile),
+        // never an unrelated `codex login` running in the user's terminal.
+        engine.run(["cancel-add"], as: SwitchResponse.self) { [weak self] _ in
+            self?.refreshStatus()
+        }
     }
 
     func deleteSlot(slot: Int, email: String?) {
@@ -570,6 +560,7 @@ final class AuthFileWatcher {
     private let path: String
     private var source: DispatchSourceFileSystemObject?
     private var debounceWork: DispatchWorkItem?
+    private var retryDelay: TimeInterval = 10
     var onChange: (() -> Void)?
 
     init(path: String) {
@@ -589,12 +580,14 @@ final class AuthFileWatcher {
     private func openAndWatch() {
         let descriptor = open(path, O_EVTONLY)
         guard descriptor >= 0 else {
-            // File may not exist yet — retry later.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            // File may not exist yet — retry with capped backoff.
+            DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay) { [weak self] in
+                self?.retryDelay = min((self?.retryDelay ?? 10) * 2, 60)
                 self?.openAndWatch()
             }
             return
         }
+        retryDelay = 10
         let newSource = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor,
             eventMask: [.write, .rename, .delete],
@@ -1546,6 +1539,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
     private var controller: StatusController?
     private var watcher: AuthFileWatcher?
     private var statusTimer: Timer?
+    private var hiddenPollCount = 0
     private var stateSubscription: AnyCancellable?
     private var antigravitySubscription: AnyCancellable?
     private var languageSubscription: AnyCancellable?
@@ -1900,8 +1894,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
     private func startTimers() {
         statusTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.controller?.refreshStatus(silent: true)
-                self?.antigravityController.refresh(silent: true)
+                guard let self else { return }
+                // Poll every 30s while the popover is open, every 60s otherwise.
+                if self.popover.isShown || self.hiddenPollCount % 2 == 1 {
+                    self.hiddenPollCount = 0
+                    self.controller?.refreshStatus(silent: true)
+                    self.antigravityController.refresh(silent: true)
+                } else {
+                    self.hiddenPollCount += 1
+                }
             }
         }
     }

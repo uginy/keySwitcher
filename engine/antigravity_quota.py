@@ -185,8 +185,8 @@ def _official_oauth_clients():
                     for secret in (secrets or [None])
                 ]
                 return _OAUTH_CLIENTS
-        _OAUTH_CLIENTS = []
-        return _OAUTH_CLIENTS
+        # Don't cache an empty result: binaries may appear later (app install).
+        return []
 
 
 def official_oauth_client():
