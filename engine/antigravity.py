@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Minimal Antigravity account snapshots for KeySwitcher.
 
-The Antigravity app and CLI share one macOS Keychain credential. IDE auth is
-restored from its state.vscdb. Saved snapshots stay in the macOS Keychain and
-token values are never returned in command JSON.
+The Antigravity app and CLI share one OS credential store (macOS Keychain or
+Windows Credential Manager). IDE auth is restored from its state.vscdb.
+Saved snapshots stay in the credential store and token values are never
+returned in command JSON.
 """
 
 import base64
 import concurrent.futures
 import contextlib
 from datetime import datetime
-import fcntl
 import hashlib
 import http.server
 import json
@@ -29,11 +29,12 @@ import urllib.request
 from pathlib import Path
 
 import antigravity_quota
+import compat
 
 HOME = Path.home()
 ROOT = Path(os.environ.get(
     "KEYSWITCHER_ANTIGRAVITY_ROOT",
-    HOME / "Library/Application Support/KeySwitcher/Antigravity",
+    compat.antigravity_default_root(),
 )).expanduser()
 STATE_FILE = ROOT / "profiles.json"
 LOCK_FILE = ROOT / ".lock"
@@ -42,17 +43,23 @@ BACKUP_DIR = ROOT / "backups"
 DB_PATHS = {
     "ide": Path(os.environ.get(
         "KEYSWITCHER_ANTIGRAVITY_IDE_DB",
-        HOME / "Library/Application Support/Antigravity IDE/User/globalStorage/state.vscdb",
+        compat.antigravity_ide_db(),
     )).expanduser(),
 }
 BUNDLE_IDS = {
     "ide": "com.google.antigravity-ide",
 }
 APP_PATHS = {
-    "ide": Path("/Applications/Antigravity IDE.app"),
+    "ide": Path(os.environ.get(
+        "KEYSWITCHER_ANTIGRAVITY_IDE_APP",
+        compat.antigravity_ide_app(),
+    )).expanduser(),
 }
 SHARED_APP_BUNDLE_ID = "com.google.antigravity"
-SHARED_APP_PATH = Path("/Applications/Antigravity.app")
+SHARED_APP_PATH = Path(os.environ.get(
+    "KEYSWITCHER_ANTIGRAVITY_APP",
+    compat.antigravity_shared_app(),
+)).expanduser()
 
 PROFILE_SERVICE = "com.eugene.keyswitcher.antigravity"
 SNAPSHOT_ACCOUNT = "vault"
@@ -65,7 +72,6 @@ CLI_CREDENTIALS_FILE = Path(os.environ.get(
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 TARGETS = {"cli", "ide"}
 LIMIT_EXHAUSTED_PERCENT = 99.0
-ANTIGRAVITY_USER_AGENT = "antigravity/2.3.1 darwin/arm64"
 IDE_OAUTH_SCOPES = (
     "https://www.googleapis.com/auth/cloud-platform",
     "https://www.googleapis.com/auth/userinfo.email",
@@ -79,6 +85,7 @@ AUTH_KEYS = (
     "antigravityUnifiedStateSync.userStatus",
     "antigravityUnifiedStateSync.enterprisePreferences",
     "antigravityAuthStatus",
+    "jetskiStateSync.agentManagerInitState",
 )
 EMAIL_RE = re.compile(rb"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 BASE64_RE = re.compile(rb"[A-Za-z0-9+/]{24,}={0,2}")
@@ -90,7 +97,7 @@ def write_json_atomic(path, data):
     try:
         with os.fdopen(fd, "w") as handle:
             json.dump(data, handle, indent=2)
-        os.chmod(temporary, 0o600)
+        compat.secure_chmod(temporary, 0o600)
         os.replace(temporary, path)
     except Exception:
         with contextlib.suppress(OSError):
@@ -100,14 +107,8 @@ def write_json_atomic(path, data):
 
 @contextlib.contextmanager
 def exclusive_lock():
-    ROOT.mkdir(parents=True, exist_ok=True)
-    with open(LOCK_FILE, "a") as handle:
-        os.chmod(LOCK_FILE, 0o600)
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with compat.exclusive_lock(LOCK_FILE):
+        yield
 
 
 def load_state():
@@ -174,8 +175,38 @@ def keychain_helper_path():
 
 
 def run_keychain(command, service, account, value=None, allow_missing=False):
+    helper = os.environ.get("KEYSWITCHER_ANTIGRAVITY_KEYCHAIN_HELPER")
+    use_helper = bool(helper)
+    if not use_helper:
+        try:
+            keychain_helper_path()
+            use_helper = True
+        except RuntimeError:
+            use_helper = False
+
+    if not use_helper and compat.IS_WIN:
+        try:
+            if command == "get":
+                blob = compat.wincred_get(service, account)
+                if blob is None:
+                    if allow_missing:
+                        return None
+                    raise RuntimeError("Keychain operation failed (44)")
+                return blob
+            if command == "set":
+                compat.wincred_set(service, account, value or b"")
+                return b""
+            if command == "delete":
+                compat.wincred_delete(service, account)
+                return b""
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError("Keychain operation failed (%s)" % exc) from exc
+        raise RuntimeError("Unknown credential command: %s" % command)
+
     result = subprocess.run(
-        [str(keychain_helper_path()), command, service, account],
+        compat.helper_command(keychain_helper_path()) + [command, service, account],
         input=value,
         capture_output=True,
         timeout=30,
@@ -356,7 +387,10 @@ def read_gui_state(target):
         ).fetchall())
     finally:
         connection.close()
-    if "antigravityUnifiedStateSync.oauthToken" not in rows:
+    if (
+        "antigravityUnifiedStateSync.oauthToken" not in rows
+        and "jetskiStateSync.agentManagerInitState" not in rows
+    ):
         raise RuntimeError("No signed-in account found in %s" % target)
     return {"kind": "sqlite", "rows": rows}
 
@@ -462,7 +496,7 @@ def snapshot_credentials(snapshot):
 def refresh_ide_snapshot(snapshot):
     credentials = snapshot_credentials(snapshot)
     credentials["access_token"] = antigravity_quota.refresh_access_token(
-        credentials["refresh_token"], ANTIGRAVITY_USER_AGENT,
+        credentials["refresh_token"], compat.antigravity_user_agent(),
     )
     rows = dict(snapshot["rows"])
     rows["antigravityUnifiedStateSync.oauthToken"] = encode_ide_oauth_state(credentials)
@@ -504,7 +538,7 @@ def google_email(credentials):
         except Exception:
             if attempt == 0:
                 access_token = antigravity_quota.refresh_access_token(
-                    credentials["refresh_token"], ANTIGRAVITY_USER_AGENT,
+                    credentials["refresh_token"], compat.antigravity_user_agent(),
                 )
                 continue
             raise
@@ -576,13 +610,8 @@ def run_oauth_worker(target, result_path):
         "redirect_uri": redirect_uri,
     })
     try:
-        subprocess.run(
-            ["open", "https://accounts.google.com/o/oauth2/v2/auth?" + query],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-            check=True,
-        )
+        if not compat.open_url("https://accounts.google.com/o/oauth2/v2/auth?" + query):
+            raise RuntimeError("Could not open the browser for Google OAuth")
         deadline = time.monotonic() + 300
         while not callback and time.monotonic() < deadline:
             server.handle_request()
@@ -641,48 +670,36 @@ def read_gui_snapshot(target):
 
 
 def app_is_running(bundle_id):
-    if os.environ.get("KEYSWITCHER_ANTIGRAVITY_SKIP_APP_CONTROL") == "1":
-        return False
-    result = subprocess.run(
-        ["osascript", "-e", 'application id "%s" is running' % bundle_id],
-        capture_output=True, text=True, timeout=5,
-    )
-    return result.returncode == 0 and result.stdout.strip().lower() == "true"
+    return compat.antigravity_app_running(bundle_id)
 
 
 def stop_app(bundle_id):
-    subprocess.run(
-        ["osascript", "-e", 'tell application id "%s" to quit' % bundle_id],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
-    )
-    for _ in range(30):
-        if not app_is_running(bundle_id):
-            return
-        time.sleep(0.2)
-    raise RuntimeError("Close the target Antigravity app and try again")
+    compat.stop_antigravity_app(bundle_id)
 
 
 def open_app(bundle_id):
-    if os.environ.get("KEYSWITCHER_ANTIGRAVITY_SKIP_APP_CONTROL") == "1":
-        return
-    result = subprocess.run(
-        ["open", "-b", bundle_id],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=10,
-    )
-    if result.returncode != 0:
-        raise RuntimeError("Could not open the target Antigravity app")
+    exe = None
+    if bundle_id == BUNDLE_IDS.get("ide"):
+        exe = APP_PATHS["ide"] / "Antigravity.exe" if compat.IS_WIN else None
+    elif compat.IS_WIN:
+        exe = SHARED_APP_PATH / "Antigravity.exe"
+    compat.open_antigravity_app(bundle_id, exe)
 
 
 def find_cli_binary():
     candidates = [
         os.environ.get("KEYSWITCHER_ANTIGRAVITY_CLI"),
         shutil.which("agy"),
+        shutil.which("agy.cmd") if compat.IS_WIN else None,
         str(HOME / ".local/bin/agy"),
         "/opt/homebrew/bin/agy",
         "/usr/local/bin/agy",
     ]
+    if compat.IS_WIN:
+        candidates.extend([
+            str(compat.antigravity_ide_app() / "bin" / "agy.exe"),
+            str(compat.antigravity_ide_app() / "bin" / "agy.cmd"),
+        ])
     return next((path for path in candidates if path and Path(path).is_file()), None)
 
 
@@ -696,7 +713,7 @@ def backup_database(source, target):
     finally:
         destination_connection.close()
         source_connection.close()
-    os.chmod(destination, 0o600)
+    compat.secure_chmod(destination, 0o600)
 
 
 def clear_gui_auth(target):
@@ -726,7 +743,10 @@ def switch_gui(profile_id, target, snapshot):
     if os.environ.get("KEYSWITCHER_ANTIGRAVITY_SKIP_TOKEN_REFRESH") != "1":
         snapshot = refresh_ide_snapshot(snapshot)
     rows = {key: value for key, value in snapshot["rows"].items() if key in AUTH_KEYS}
-    if "antigravityUnifiedStateSync.oauthToken" not in rows:
+    if (
+        "antigravityUnifiedStateSync.oauthToken" not in rows
+        and "jetskiStateSync.agentManagerInitState" not in rows
+    ):
         raise RuntimeError("Saved GUI snapshot has no OAuth token")
     path = DB_PATHS[target]
     if not path.is_file():
@@ -755,10 +775,8 @@ def switch_gui(profile_id, target, snapshot):
             connection.close()
     finally:
         if was_running:
-            subprocess.run(
-                ["open", "-b", bundle_id],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
+            with contextlib.suppress(Exception):
+                open_app(bundle_id)
 
     state = load_state()
     state["active"][target] = profile_id
@@ -841,7 +859,7 @@ def begin_login(target):
         result_path.unlink()
     pending["oauth_result_path"] = str(result_path)
     if os.environ.get("KEYSWITCHER_ANTIGRAVITY_SKIP_APP_CONTROL") != "1":
-        worker = subprocess.Popen(
+        worker = compat.popen_detached(
             [
                 sys.executable,
                 str(Path(__file__).resolve()),
@@ -849,10 +867,6 @@ def begin_login(target):
                 target,
                 str(result_path),
             ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
         )
         pending["oauth_worker_pid"] = worker.pid
 
@@ -1332,11 +1346,13 @@ def status(sync_cli=False):
 
 
 def keychain_helper_available():
+    if os.environ.get("KEYSWITCHER_ANTIGRAVITY_KEYCHAIN_HELPER"):
+        return Path(os.environ["KEYSWITCHER_ANTIGRAVITY_KEYCHAIN_HELPER"]).is_file()
     try:
         keychain_helper_path()
         return True
     except RuntimeError:
-        return False
+        return compat.IS_WIN
 
 
 def main(args):

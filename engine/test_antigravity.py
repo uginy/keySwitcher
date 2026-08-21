@@ -522,7 +522,10 @@ def main():
         keychain_probe = root / "keychain-probe"
         probe_helper = root / "probe-helper"
         probe_helper.write_text(
-            '#!/bin/sh\n: > "$FAKE_KEYCHAIN_TOUCHED"\nexit 44\n'
+            "#!/usr/bin/env python3\n"
+            "import os, sys\n"
+            "open(os.environ['FAKE_KEYCHAIN_TOUCHED'], 'w').close()\n"
+            "raise SystemExit(44)\n"
         )
         probe_helper.chmod(0o700)
         probe_env = dict(env)

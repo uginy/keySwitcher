@@ -8,16 +8,16 @@ the `daemon` command for reactive rotation on 429/401 log events.
 
 import base64
 import contextlib
-import fcntl
 import json
 import logging
 import os
 import shutil
 import sqlite3
-import subprocess
 import sys
 import time
 from pathlib import Path
+
+import compat
 
 CODEX_DIR = Path.home() / ".codex"
 ACCOUNTS_DIR = CODEX_DIR / "accounts"
@@ -26,8 +26,8 @@ CODEX_STATE_DB = CODEX_DIR / "state_5.sqlite"
 # Shared with keyswitcher.py so manual switch and the LaunchAgent daemon
 # serialize auth/slot file mutations. Path must stay identical.
 LOCK_FILE = CODEX_DIR / "keyswitcher" / ".lock"
-DAEMON_LOG = Path.home() / "Library" / "Logs" / "KeySwitcher" / "daemon.log"
-CODEX_LOG_DIR = Path.home() / "Library" / "Logs" / "com.openai.codex"
+DAEMON_LOG = compat.keyswitcher_log_dir() / "daemon.log"
+CODEX_LOG_DIR = compat.codex_log_dir()
 
 LIMIT_KEYWORDS = [
     "rate_limit_exceeded",
@@ -53,17 +53,8 @@ def exclusive_lock():
 
     Hold only around filesystem copies — never around Codex quit/relaunch.
     """
-    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(LOCK_FILE, "a")
-    try:
-        with contextlib.suppress(OSError):
-            os.chmod(LOCK_FILE, 0o600)
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    with compat.exclusive_lock(LOCK_FILE):
         yield
-    finally:
-        with contextlib.suppress(OSError):
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        fh.close()
 
 
 def read_json(path):
@@ -158,16 +149,10 @@ def sync_active_token_to_slot():
 def codex_app_is_running():
     """True if a Codex desktop process appears to be alive.
 
-    Process names vary; force-kill below still targets only `Codex`.
+    On Windows the Store Codex app is ChatGPT.exe under OpenAI.Codex_*;
+    ChatGPT Classic (a different package) is left alone.
     """
-    for name in ("Codex", "ChatGPT"):
-        if subprocess.run(
-            ["pgrep", "-x", name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        ).returncode == 0:
-            return True
-    return False
+    return compat.codex_desktop_running()
 
 
 def quit_codex_app():
@@ -175,30 +160,16 @@ def quit_codex_app():
         print("Codex app is not running; nothing to restart.")
         return
     print("Quitting Codex to apply the new account...")
-    with contextlib.suppress(Exception):
-        subprocess.run(
-            ["osascript", "-e", 'tell application id "com.openai.codex" to quit'],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-        )
-    for _ in range(24):
-        if not codex_app_is_running():
-            print("Codex quit cleanly.")
-            return
-        time.sleep(0.25)
-    # Never killall ChatGPT — that can take down an unrelated app.
-    subprocess.run(
-        ["killall", "Codex"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    compat.quit_codex_desktop()
+    if not codex_app_is_running():
+        print("Codex quit cleanly.")
+        return
     time.sleep(0.5)
     print("Codex force-quit because it did not exit cleanly.")
 
 
 def relaunch_codex_app():
-    subprocess.run(["open", "-b", "com.openai.codex"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    compat.relaunch_codex_desktop()
     print("Codex relaunched with the new account.")
 
 
@@ -224,17 +195,7 @@ def latest_local_thread_id():
 
 
 def reopen_codex_thread(thread_id):
-    if not thread_id:
-        return False
-    try:
-        return subprocess.run(
-            ["open", "codex://threads/%s" % thread_id],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-        ).returncode == 0
-    except Exception:
-        return False
+    return compat.reopen_codex_thread(thread_id)
 
 
 def rotate(target_slot=None, restart_app=True):

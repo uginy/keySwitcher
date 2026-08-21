@@ -10,6 +10,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+import compat
+
 PROJECT_ENDPOINTS = (
     "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
     "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:loadCodeAssist",
@@ -22,11 +24,7 @@ QUOTA_ENDPOINTS = (
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 OAUTH_CLIENT_RE = rb"[0-9]{6,}-[A-Za-z0-9_-]+[.]apps[.]googleusercontent[.]com"
 OAUTH_SECRET_RE = rb"GOCSPX-[A-Za-z0-9_-]+"
-OFFICIAL_AUTH_BINARIES = (
-    Path("/Applications/Antigravity IDE.app/Contents/Resources/app/out/main.js"),
-    Path("/Applications/Antigravity.app/Contents/Resources/bin/language_server"),
-    Path("/Applications/Antigravity IDE.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm"),
-)
+OFFICIAL_AUTH_BINARIES = compat.official_auth_binaries()
 _OAUTH_CLIENTS = None
 _OAUTH_CLIENTS_LOCK = threading.Lock()
 
@@ -401,7 +399,7 @@ def normalize_quota_groups(groups):
 
 
 def fetch_quota(access_token, refresh_token=None, version="2.3.1"):
-    user_agent = "antigravity/%s darwin/arm64" % version
+    user_agent = compat.antigravity_user_agent(version)
     try:
         return _fetch_quota_with_token(access_token, user_agent)
     except RuntimeError:

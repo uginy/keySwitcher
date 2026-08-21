@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""KeySwitcher engine: JSON CLI backend for the KeySwitcher macOS menu bar app.
+"""KeySwitcher engine: JSON CLI backend for the KeySwitcher menu bar / tray app.
 
 This is the single source of truth the Swift menu bar app shells out to. It
 manages the saved Codex account slots in ~/.codex/accounts/auth_N.json,
@@ -23,10 +23,8 @@ syncs them back to slots.
 import base64
 import concurrent.futures
 import contextlib
-import fcntl
 import json
 import os
-import plistlib
 import shutil
 import signal
 import ssl
@@ -41,6 +39,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 import antigravity as antigravity_engine
+import compat
 
 HOME = Path.home()
 CODEX_DIR = HOME / ".codex"
@@ -61,9 +60,9 @@ REFRESH_FAIL_COOLDOWN = 3600  # per-slot backoff after a failed refresh
 LIMIT_EXHAUSTED_PERCENT = 99.0  # 1% remaining or less is close enough to blocked
 
 LAUNCH_AGENT_LABEL = "com.codex.rotator"
-LAUNCH_AGENT_PLIST = HOME / "Library" / "LaunchAgents" / "com.codex.rotator.plist"
-APP_SUPPORT_DIR = HOME / "Library" / "Application Support" / "KeySwitcher"
-LOG_DIR = HOME / "Library" / "Logs" / "KeySwitcher"
+LAUNCH_AGENT_PLIST = compat.launch_agent_plist()
+APP_SUPPORT_DIR = compat.keyswitcher_support_dir()
+LOG_DIR = compat.keyswitcher_log_dir()
 ROTATOR_NAME = "rotator.py"
 LAUNCH_ROTATOR = APP_SUPPORT_DIR / ROTATOR_NAME
 DAEMON_PATTERN = str(LAUNCH_ROTATOR)
@@ -82,15 +81,20 @@ DEFAULT_STATE = {"cooldown_until": 0, "refresh_failures": {}}
 # PATH or when `codex` resolves to the Node wrapper script.
 CODEX_NATIVE_GLOBS = [
     "node_modules/@openai/codex/node_modules/@openai/codex-*/vendor/*/codex/codex",
+    "node_modules/@openai/codex/node_modules/@openai/codex-*/vendor/*/bin/codex",
+    "node_modules/@openai/codex/node_modules/@openai/codex-*/vendor/*/bin/codex.exe",
     "node_modules/@openai/codex-*/vendor/*/bin/codex",
+    "node_modules/@openai/codex-*/vendor/*/bin/codex.exe",
     "@openai/codex-*/vendor/*/bin/codex",
+    "@openai/codex-*/vendor/*/bin/codex.exe",
+    "@openai/codex/node_modules/@openai/codex-*/vendor/*/bin/codex.exe",
 ]
 CODEX_GLOB_ROOTS = [
     HOME / ".bun/install/global",
     HOME / ".nvm/versions/node",  # searched as <root>/*/lib/<glob>
     Path("/usr/local/lib"),
     Path("/opt/homebrew/lib"),
-]
+] + compat.extra_codex_glob_roots()
 
 _SSL_CONTEXT = None
 
@@ -126,7 +130,7 @@ def write_json_atomic(path, data, mode=0o600):
     try:
         with os.fdopen(fd, "w") as fh:
             json.dump(data, fh, indent=2)
-        os.chmod(tmp, mode)
+        compat.secure_chmod(tmp, mode)
         os.replace(tmp, path)
     except Exception:
         with contextlib.suppress(OSError):
@@ -137,16 +141,8 @@ def write_json_atomic(path, data, mode=0o600):
 @contextlib.contextmanager
 def exclusive_lock():
     """Exclusive advisory lock shared by every keyswitcher process."""
-    KS_DIR.mkdir(parents=True, exist_ok=True)
-    fh = open(LOCK_FILE, "a")
-    try:
-        os.chmod(LOCK_FILE, 0o600)
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    with compat.exclusive_lock(LOCK_FILE):
         yield
-    finally:
-        with contextlib.suppress(OSError):
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        fh.close()
 
 
 # --------------------------------------------------------------------------
@@ -306,32 +302,37 @@ def _pick_client_id(candidates):
 
 
 def _unique_existing_paths(candidates):
-    unique = []
-    for cand in candidates:
-        path = Path(cand) if cand else None
-        if path and path.is_file() and os.access(path, os.X_OK) and path not in unique:
-            unique.append(path)
-    return unique
+    return compat.unique_existing_runnables(candidates)
 
 
 def _codex_binary_candidates():
     candidates = []
     try:
-        result = subprocess.run(
-            ["/bin/sh", "-c", "command -v codex"],
-            capture_output=True, text=True, timeout=10,
-        )
-        found = result.stdout.strip()
+        found = shutil.which("codex") or ""
+        if not found and not compat.IS_WIN:
+            result = subprocess.run(
+                ["/bin/sh", "-c", "command -v codex"],
+                capture_output=True, text=True, timeout=10,
+            )
+            found = result.stdout.strip()
         if found:
             real = Path(found).resolve()
-            if real.name != "codex.js":
+            if real.name.lower() not in ("codex.js",):
                 candidates.append(real)
             # Node wrapper lives at <pkg>/bin/codex.js; native binary is in
             # the platform sub-package under the same package root.
-            pkg_root = real.parent.parent
-            candidates.extend(sorted(pkg_root.glob("node_modules/@openai/codex-*/vendor/*/codex/codex")))
-            candidates.extend(sorted(pkg_root.glob("node_modules/@openai/codex-*/vendor/*/bin/codex")))
-            candidates.extend(sorted(pkg_root.parent.glob("codex-*/vendor/*/bin/codex")))
+            search_roots = [real.parent, real.parent.parent]
+            if compat.IS_WIN:
+                npm_modules = Path(os.environ.get("APPDATA", "")) / "npm" / "node_modules"
+                search_roots.append(npm_modules)
+            for pkg_root in search_roots:
+                candidates.extend(sorted(pkg_root.glob("node_modules/@openai/codex-*/vendor/*/codex/codex")))
+                candidates.extend(sorted(pkg_root.glob("node_modules/@openai/codex-*/vendor/*/bin/codex")))
+                candidates.extend(sorted(pkg_root.glob("node_modules/@openai/codex-*/vendor/*/bin/codex.exe")))
+                candidates.extend(sorted(pkg_root.glob("@openai/codex-*/vendor/*/bin/codex.exe")))
+                candidates.extend(sorted(pkg_root.glob("@openai/codex/node_modules/@openai/codex-*/vendor/*/bin/codex.exe")))
+                candidates.extend(sorted(pkg_root.parent.glob("codex-*/vendor/*/bin/codex")))
+                candidates.extend(sorted(pkg_root.parent.glob("codex-*/vendor/*/bin/codex.exe")))
     except Exception:
         pass
     for root in CODEX_GLOB_ROOTS:
@@ -355,6 +356,7 @@ def resolve_codex_cli():
     found = shutil.which("codex")
     if found:
         candidates.append(Path(found))
+    candidates.extend(compat.extra_cli_candidates())
     candidates.extend([
         HOME / ".local/bin/codex",
         HOME / ".bun/bin/codex",
@@ -368,12 +370,7 @@ def resolve_codex_cli():
 def codex_login_env(tmp_home):
     env = dict(os.environ)
     env["CODEX_HOME"] = str(tmp_home)
-    extra_path = [
-        str(HOME / ".local/bin"),
-        str(HOME / ".bun/bin"),
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-    ]
+    extra_path = [str(path) for path in compat.extra_codex_path_dirs()]
     env["PATH"] = os.pathsep.join(extra_path + [env.get("PATH", "")])
     return env
 
@@ -822,12 +819,7 @@ def best_email(slot, cache):
 def daemon_running():
     patterns = [DAEMON_PATTERN, KS_DAEMON_PATTERN, LEGACY_DAEMON_PATTERN]
     try:
-        for pattern in patterns:
-            result = subprocess.run(["pgrep", "-f", pattern],
-                                    capture_output=True, timeout=10)
-            if result.returncode == 0:
-                return True
-        return False
+        return any(compat.command_running(pattern) for pattern in patterns)
     except Exception:
         return False
 
