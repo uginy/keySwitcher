@@ -364,7 +364,12 @@ struct AntigravityPanelView: View {
     @ViewBuilder
     private var content: some View {
         if let profiles = controller.status?.profiles, !profiles.isEmpty {
-            profilesList(profiles)
+            ScrollView {
+                profilesList(profiles)
+                    .padding(.horizontal, 2)
+                    .padding(.vertical, 2)
+            }
+            .frame(maxHeight: 350)
         } else if controller.isLoading {
             Text(L10n.loading)
                 .foregroundColor(.secondary)
@@ -699,7 +704,7 @@ struct AntigravityAccountCard: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(strokeColor, lineWidth: 1.5)
+                .strokeBorder(strokeColor, lineWidth: 1.5)
         )
     }
 
