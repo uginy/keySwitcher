@@ -367,7 +367,7 @@ struct AntigravityPanelView: View {
             ScrollView {
                 profilesList(profiles)
             }
-            .frame(maxHeight: 320)
+            .frame(maxHeight: 520)
         } else if controller.isLoading {
             Text(L10n.loading)
                 .foregroundColor(.secondary)

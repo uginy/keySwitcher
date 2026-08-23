@@ -907,9 +907,9 @@ struct AccountCardView: View {
 
     private var strokeColor: Color {
         if isLimitExhausted { return Color.red.opacity(0.75) }
-        if isActive { return Color.green.opacity(0.6) }
+        if isActive { return Color.green.opacity(0.65) }
         if needsLogin { return Color.red.opacity(0.5) }
-        return Color.primary.opacity(0.12)
+        return Color.clear
     }
 
     private var isLimitExhausted: Bool {
@@ -925,12 +925,12 @@ struct AccountCardView: View {
         }
         .padding(10)
         .background(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 10)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(strokeColor, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(strokeColor, lineWidth: 1.5)
         )
     }
 
@@ -1317,50 +1317,42 @@ struct PanelView: View {
             .padding(.vertical, 12)
         } else if let accounts = state.status?.accounts, !accounts.isEmpty {
             VStack(spacing: 8) {
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(), spacing: 8),
-                        GridItem(.flexible(), spacing: 8)
-                    ],
-                    spacing: 8
-                ) {
-                    ForEach(orderedAccounts(accounts), id: \.slot) { account in
-                        AccountCardView(
-                            account: account,
-                            isSwitchingThis: state.switchingSlot == account.slot,
-                            isReloginingThis: state.reloginingSlot == account.slot,
-                            buttonsDisabled: state.isSwitching,
-                            onSwitchWithRestart: { controller.switchTo(slot: account.slot, restartCodex: true) },
-                            onRelogin: { controller.reloginSlot(slot: account.slot) },
-                            onDelete: { slotToDelete = account },
-                            onDragChanged: { updateDrag($0, slot: account.slot, accounts: accounts) },
-                            onDragEnded: { finishDrag(slot: account.slot, accounts: accounts) }
-                        )
-                        .background {
-                            GeometryReader { geometry in
-                                Color.clear.preference(
-                                    key: AccountFramePreferenceKey.self,
-                                    value: [account.slot: geometry.frame(in: .named("accountList"))]
-                                )
-                            }
+                ForEach(orderedAccounts(accounts), id: \.slot) { account in
+                    AccountCardView(
+                        account: account,
+                        isSwitchingThis: state.switchingSlot == account.slot,
+                        isReloginingThis: state.reloginingSlot == account.slot,
+                        buttonsDisabled: state.isSwitching,
+                        onSwitchWithRestart: { controller.switchTo(slot: account.slot, restartCodex: true) },
+                        onRelogin: { controller.reloginSlot(slot: account.slot) },
+                        onDelete: { slotToDelete = account },
+                        onDragChanged: { updateDrag($0, slot: account.slot, accounts: accounts) },
+                        onDragEnded: { finishDrag(slot: account.slot, accounts: accounts) }
+                    )
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(
+                                key: AccountFramePreferenceKey.self,
+                                value: [account.slot: geometry.frame(in: .named("accountList"))]
+                            )
                         }
-                        .offset(y: draggedSlot == account.slot ? dragOffset : 0)
-                        .scaleEffect(draggedSlot == account.slot ? 1.015 : 1)
-                        .shadow(
-                            color: .black.opacity(draggedSlot == account.slot ? 0.24 : 0),
-                            radius: draggedSlot == account.slot ? 12 : 0,
-                            y: draggedSlot == account.slot ? 6 : 0
-                        )
-                        .zIndex(draggedSlot == account.slot ? 10 : 0)
-                        .overlay(alignment: dropIndicatorAlignment) {
-                            dropIndicator(for: account.slot)
-                        }
-                        .accessibilityAction(named: Text(L10n.moveUp)) {
-                            moveAccount(account.slot, by: -1, accounts: accounts)
-                        }
-                        .accessibilityAction(named: Text(L10n.moveDown)) {
-                            moveAccount(account.slot, by: 1, accounts: accounts)
-                        }
+                    }
+                    .offset(y: draggedSlot == account.slot ? dragOffset : 0)
+                    .scaleEffect(draggedSlot == account.slot ? 1.015 : 1)
+                    .shadow(
+                        color: .black.opacity(draggedSlot == account.slot ? 0.24 : 0),
+                        radius: draggedSlot == account.slot ? 12 : 0,
+                        y: draggedSlot == account.slot ? 6 : 0
+                    )
+                    .zIndex(draggedSlot == account.slot ? 10 : 0)
+                    .overlay(alignment: dropIndicatorAlignment) {
+                        dropIndicator(for: account.slot)
+                    }
+                    .accessibilityAction(named: Text(L10n.moveUp)) {
+                        moveAccount(account.slot, by: -1, accounts: accounts)
+                    }
+                    .accessibilityAction(named: Text(L10n.moveDown)) {
+                        moveAccount(account.slot, by: 1, accounts: accounts)
                     }
                 }
                 addAccountProgress
@@ -1430,12 +1422,13 @@ struct PanelView: View {
 
     @ViewBuilder
     private func dropIndicator(for slot: Int) -> some View {
-        if dropTargetSlot == slot && draggedSlot != slot {
-            Capsule()
+        if dropTargetSlot == slot && draggedSlot != slot, let edge = dropTargetEdge {
+            Rectangle()
                 .fill(Color.accentColor)
-                .frame(height: 3)
-                .padding(.horizontal, 8)
-                .offset(y: dropTargetEdge == .bottom ? 5 : -5)
+                .frame(height: 2)
+                .padding(.horizontal, 4)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: edge == .top ? .top : .bottom)
+                .allowsHitTesting(false)
         }
     }
 
@@ -1458,6 +1451,7 @@ struct PanelView: View {
     }
 
     private func updateDrag(_ gesture: DragGesture.Value, slot: Int, accounts: [AccountInfo]) {
+        guard draggedSlot == nil || draggedSlot == slot else { return }
         if draggedSlot != slot {
             accountOrder = normalizedAccountOrder(for: accounts)
             withAnimation(.easeOut(duration: 0.12)) {
@@ -1467,45 +1461,68 @@ struct PanelView: View {
         NSCursor.closedHand.set()
         dragOffset = gesture.translation.height
 
-        let targetSlot = accountFrames.min {
-            abs($0.value.midY - gesture.location.y) < abs($1.value.midY - gesture.location.y)
-        }?.key
-        guard targetSlot != dropTargetSlot else { return }
-        dropTargetSlot = targetSlot
+        guard let currentFrame = accountFrames[slot] else { return }
+        let currentMidY = currentFrame.midY + dragOffset
+        var nearestSlot: Int? = nil
+        var nearestDistance: CGFloat = .infinity
+        var edge: VerticalEdge = .top
 
-        let order = normalizedAccountOrder(for: accounts)
-        if let targetSlot,
-           targetSlot != slot,
-           let fromIndex = order.firstIndex(of: slot),
-           let targetIndex = order.firstIndex(of: targetSlot) {
-            dropTargetEdge = targetIndex > fromIndex ? .bottom : .top
-            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-        } else {
-            dropTargetEdge = nil
+        for (otherSlot, frame) in accountFrames where otherSlot != slot {
+            let distance = abs(frame.midY - currentMidY)
+            if distance < nearestDistance {
+                nearestDistance = distance
+                nearestSlot = otherSlot
+                edge = currentMidY < frame.midY ? .top : .bottom
+            }
+        }
+
+        if dropTargetSlot != nearestSlot || dropTargetEdge != edge {
+            dropTargetSlot = nearestSlot
+            dropTargetEdge = edge
+            if nearestSlot != nil {
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            }
         }
     }
 
     private func finishDrag(slot: Int, accounts: [AccountInfo]) {
-        var updatedOrder = normalizedAccountOrder(for: accounts)
-        if let targetSlot = dropTargetSlot,
-           targetSlot != slot,
-           let fromIndex = updatedOrder.firstIndex(of: slot),
-           let targetIndex = updatedOrder.firstIndex(of: targetSlot) {
-            updatedOrder.move(
-                fromOffsets: IndexSet(integer: fromIndex),
-                toOffset: targetIndex > fromIndex ? targetIndex + 1 : targetIndex
-            )
-            saveAccountOrder(updatedOrder)
-            NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
-        }
+        guard draggedSlot == slot else { return }
+        let targetSlot = dropTargetSlot
+        let targetEdge = dropTargetEdge
 
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-            accountOrder = updatedOrder
+        withAnimation(.easeOut(duration: 0.15)) {
             draggedSlot = nil
             dragOffset = 0
             dropTargetSlot = nil
             dropTargetEdge = nil
         }
+
+        guard let targetSlot, targetSlot != slot else {
+            NSCursor.openHand.set()
+            return
+        }
+
+        var updatedOrder = normalizedAccountOrder(for: accounts)
+        guard let sourceIndex = updatedOrder.firstIndex(of: slot),
+              let destIndex = updatedOrder.firstIndex(of: targetSlot) else {
+            NSCursor.openHand.set()
+            return
+        }
+
+        updatedOrder.remove(at: sourceIndex)
+        var insertionIndex = destIndex
+        if targetEdge == .bottom {
+            insertionIndex = min(insertionIndex + 1, updatedOrder.count)
+        }
+        if sourceIndex < destIndex && targetEdge == .top {
+            insertionIndex = max(0, insertionIndex)
+        }
+        insertionIndex = min(max(0, insertionIndex), updatedOrder.count)
+        updatedOrder.insert(slot, at: insertionIndex)
+
+        accountOrder = updatedOrder
+        saveAccountOrder(updatedOrder)
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
         NSCursor.openHand.set()
     }
 
