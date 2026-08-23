@@ -364,10 +364,7 @@ struct AntigravityPanelView: View {
     @ViewBuilder
     private var content: some View {
         if let profiles = controller.status?.profiles, !profiles.isEmpty {
-            ScrollView {
-                profilesList(profiles)
-            }
-            .frame(maxHeight: 520)
+            profilesList(profiles)
         } else if controller.isLoading {
             Text(L10n.loading)
                 .foregroundColor(.secondary)
@@ -566,6 +563,11 @@ struct AntigravityAccountCard: View {
         return nil
     }
 
+    private var strokeColor: Color {
+        if isPartiallyActive { return Color.green.opacity(0.65) }
+        return Color.clear
+    }
+
     private var displayedAccountName: String {
         if isEmailRevealed {
             return profile.email
@@ -697,12 +699,7 @@ struct AntigravityAccountCard: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(
-                    isFullyActive
-                        ? Color.green.opacity(0.65)
-                        : (isPartiallyActive ? Color.green.opacity(0.35) : Color.clear),
-                    lineWidth: 1.5
-                )
+                .stroke(strokeColor, lineWidth: 1.5)
         )
     }
 
