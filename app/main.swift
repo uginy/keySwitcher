@@ -1316,61 +1316,17 @@ struct PanelView: View {
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.vertical, 12)
         } else if let accounts = state.status?.accounts, !accounts.isEmpty {
-            ScrollView {
-                VStack(spacing: 8) {
-                    ForEach(orderedAccounts(accounts), id: \.slot) { account in
-                        AccountCardView(
-                            account: account,
-                            isSwitchingThis: state.switchingSlot == account.slot,
-                            isReloginingThis: state.reloginingSlot == account.slot,
-                            buttonsDisabled: state.isSwitching,
-                            onSwitchWithRestart: { controller.switchTo(slot: account.slot, restartCodex: true) },
-                            onRelogin: { controller.reloginSlot(slot: account.slot) },
-                            onDelete: { slotToDelete = account },
-                            onDragChanged: { updateDrag($0, slot: account.slot, accounts: accounts) },
-                            onDragEnded: { finishDrag(slot: account.slot, accounts: accounts) }
-                        )
-                        .background {
-                            GeometryReader { geometry in
-                                Color.clear.preference(
-                                    key: AccountFramePreferenceKey.self,
-                                    value: [account.slot: geometry.frame(in: .named("accountList"))]
-                                )
-                            }
-                        }
-                        .offset(y: draggedSlot == account.slot ? dragOffset : 0)
-                        .scaleEffect(draggedSlot == account.slot ? 1.015 : 1)
-                        .shadow(
-                            color: .black.opacity(draggedSlot == account.slot ? 0.24 : 0),
-                            radius: draggedSlot == account.slot ? 12 : 0,
-                            y: draggedSlot == account.slot ? 6 : 0
-                        )
-                        .zIndex(draggedSlot == account.slot ? 10 : 0)
-                        .overlay(alignment: dropIndicatorAlignment) {
-                            dropIndicator(for: account.slot)
-                        }
-                        .accessibilityAction(named: Text(L10n.moveUp)) {
-                            moveAccount(account.slot, by: -1, accounts: accounts)
-                        }
-                        .accessibilityAction(named: Text(L10n.moveDown)) {
-                            moveAccount(account.slot, by: 1, accounts: accounts)
-                        }
-                    }
-                    addAccountProgress
+            if accounts.count > 3 {
+                ScrollView {
+                    codexAccountsList(accounts)
+                        .padding(.horizontal, 2)
+                        .padding(.vertical, 2)
                 }
-                .padding(.horizontal, 2)
-                .padding(.vertical, 2)
-            }
-            .frame(maxHeight: 280)
-            .coordinateSpace(name: "accountList")
-            .onAppear { syncAccountOrder(with: accounts) }
-            .onChange(of: accounts.map(\.slot)) { _ in
-                syncAccountOrder(with: accounts)
-            }
-            .onPreferenceChange(AccountFramePreferenceKey.self) { frames in
-                if draggedSlot == nil {
-                    accountFrames = frames
-                }
+                .frame(height: 280)
+            } else {
+                codexAccountsList(accounts)
+                    .padding(.horizontal, 2)
+                    .padding(.vertical, 2)
             }
         } else if state.isLoading {
             Text(L10n.loading)
@@ -1409,6 +1365,60 @@ struct PanelView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
+        }
+    }
+
+    private func codexAccountsList(_ accounts: [AccountInfo]) -> some View {
+        VStack(spacing: 8) {
+            ForEach(orderedAccounts(accounts), id: \.slot) { account in
+                AccountCardView(
+                    account: account,
+                    isSwitchingThis: state.switchingSlot == account.slot,
+                    isReloginingThis: state.reloginingSlot == account.slot,
+                    buttonsDisabled: state.isSwitching,
+                    onSwitchWithRestart: { controller.switchTo(slot: account.slot, restartCodex: true) },
+                    onRelogin: { controller.reloginSlot(slot: account.slot) },
+                    onDelete: { slotToDelete = account },
+                    onDragChanged: { updateDrag($0, slot: account.slot, accounts: accounts) },
+                    onDragEnded: { finishDrag(slot: account.slot, accounts: accounts) }
+                )
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(
+                            key: AccountFramePreferenceKey.self,
+                            value: [account.slot: geometry.frame(in: .named("accountList"))]
+                        )
+                    }
+                }
+                .offset(y: draggedSlot == account.slot ? dragOffset : 0)
+                .scaleEffect(draggedSlot == account.slot ? 1.015 : 1)
+                .shadow(
+                    color: .black.opacity(draggedSlot == account.slot ? 0.24 : 0),
+                    radius: draggedSlot == account.slot ? 12 : 0,
+                    y: draggedSlot == account.slot ? 6 : 0
+                )
+                .zIndex(draggedSlot == account.slot ? 10 : 0)
+                .overlay(alignment: dropIndicatorAlignment) {
+                    dropIndicator(for: account.slot)
+                }
+                .accessibilityAction(named: Text(L10n.moveUp)) {
+                    moveAccount(account.slot, by: -1, accounts: accounts)
+                }
+                .accessibilityAction(named: Text(L10n.moveDown)) {
+                    moveAccount(account.slot, by: 1, accounts: accounts)
+                }
+            }
+            addAccountProgress
+        }
+        .coordinateSpace(name: "accountList")
+        .onAppear { syncAccountOrder(with: accounts) }
+        .onChange(of: accounts.map(\.slot)) { _ in
+            syncAccountOrder(with: accounts)
+        }
+        .onPreferenceChange(AccountFramePreferenceKey.self) { frames in
+            if draggedSlot == nil {
+                accountFrames = frames
+            }
         }
     }
 

@@ -364,12 +364,18 @@ struct AntigravityPanelView: View {
     @ViewBuilder
     private var content: some View {
         if let profiles = controller.status?.profiles, !profiles.isEmpty {
-            ScrollView {
+            if profiles.count > 4 {
+                ScrollView {
+                    profilesList(profiles)
+                        .padding(.horizontal, 2)
+                        .padding(.vertical, 2)
+                }
+                .frame(height: 350)
+            } else {
                 profilesList(profiles)
                     .padding(.horizontal, 2)
                     .padding(.vertical, 2)
             }
-            .frame(maxHeight: 350)
         } else if controller.isLoading {
             Text(L10n.loading)
                 .foregroundColor(.secondary)
