@@ -404,7 +404,6 @@ struct AntigravityPanelView: View {
                     isCliActive: controller.status?.active?["cli"] == profile.id,
                     isIdeActive: controller.status?.active?["ide"] == profile.id,
                     isLoading: controller.isLoading,
-                    onSwitchAll: { controller.switchTo(profileID: profile.id, target: "all") },
                     onSwitchCli: { controller.switchTo(profileID: profile.id, target: "cli") },
                     onSwitchIde: { controller.switchTo(profileID: profile.id, target: "ide") },
                     onRemove: { removal = AntigravityRemoval(profileID: profile.id) },
@@ -552,7 +551,6 @@ struct AntigravityAccountCard: View {
     let isCliActive: Bool
     let isIdeActive: Bool
     let isLoading: Bool
-    let onSwitchAll: () -> Void
     let onSwitchCli: () -> Void
     let onSwitchIde: () -> Void
     let onRemove: () -> Void
@@ -665,14 +663,6 @@ struct AntigravityAccountCard: View {
                         .fixedSize(horizontal: true, vertical: false)
                 }
                 Menu {
-                    if !isFullyActive {
-                        Button {
-                            onSwitchAll()
-                        } label: {
-                            Label(L10n.switchEverywhere, systemImage: "arrow.right.circle")
-                        }
-                        Divider()
-                    }
                     if !isCliActive {
                         Button {
                             onSwitchCli()

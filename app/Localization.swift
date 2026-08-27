@@ -90,14 +90,14 @@ public enum L10n {
 
     // Account Card Status
     public static var active: String { isRu ? "Активен" : "Active" }
-    public static var activeCli: String { isRu ? "Активен (CLI)" : "Active (CLI)" }
+    public static var activeCli: String { isRu ? "Активен (Agent / CLI)" : "Active (Agent / CLI)" }
     public static var activeIde: String { isRu ? "Активен (IDE)" : "Active (IDE)" }
     public static var openingLogin: String { isRu ? "Открываю вход…" : "Opening login…" }
     public static var logIn: String { isRu ? "Войти" : "Log in" }
     public static var accountActions: String { isRu ? "Действия аккаунта" : "Account actions" }
     public static var switchAction: String { isRu ? "Переключить" : "Switch" }
     public static var switchEverywhere: String { isRu ? "Переключить везде (CLI + IDE)" : "Switch everywhere (CLI + IDE)" }
-    public static var switchCliOnly: String { isRu ? "Переключить только CLI" : "Switch CLI only" }
+    public static var switchCliOnly: String { isRu ? "Переключить только Agent App / CLI" : "Switch Agent App / CLI only" }
     public static var switchIdeOnly: String { isRu ? "Переключить только IDE" : "Switch IDE only" }
     public static var removeFromSwitcher: String { isRu ? "Удалить из свитчера" : "Remove from switcher" }
     public static var deleteAccount: String { isRu ? "Удалить аккаунт" : "Delete account" }
