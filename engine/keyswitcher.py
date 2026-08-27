@@ -74,6 +74,7 @@ RELOGIN_TIMEOUT = 300  # seconds to allow for the interactive browser login
 DEFAULT_CONFIG = {
     "autoswitch_enabled": False,  # opt-in: ON drives the silent reactive daemon
     "notifications": True,
+    "tray_display": "both",
 }
 DEFAULT_STATE = {"cooldown_until": 0, "refresh_failures": {}}
 
@@ -937,6 +938,11 @@ def _coerce_config_value(key, value):
         if lowered in ("false", "0", "no", "off"):
             return False
         raise ValueError("%s expects a boolean (true/false)" % key)
+    if key == "tray_display":
+        lowered = value.strip().lower()
+        if lowered in ("both", "codex", "antigravity"):
+            return lowered
+        raise ValueError("%s expects both/codex/antigravity" % key)
     if key == "client_id":
         return str(value)
     raise ValueError("unknown config key: %s" % key)

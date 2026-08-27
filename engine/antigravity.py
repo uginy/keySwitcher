@@ -396,7 +396,7 @@ def read_gui_state(target):
 
 
 def decode_cli_payload(raw):
-    text = raw.decode().strip()
+    text = raw.decode().strip() if isinstance(raw, bytes) else raw.strip()
     if text.startswith("go-keyring-base64:"):
         text = base64.b64decode(text.split(":", 1)[1]).decode()
     payload = json.loads(text)
@@ -404,6 +404,28 @@ def decode_cli_payload(raw):
     if not token.get("access_token") or not token.get("refresh_token"):
         raise RuntimeError("Antigravity CLI credential is incomplete")
     return payload
+
+
+def encode_cli_payload(payload, base64_encoded=False):
+    text = json.dumps(payload, separators=(",", ":"))
+    if base64_encoded:
+        return "go-keyring-base64:" + base64.b64encode(text.encode()).decode()
+    return text
+
+
+def refresh_cli_snapshot(snapshot):
+    raw = snapshot.get("payload", "")
+    base64_encoded = raw.startswith("go-keyring-base64:")
+    payload = decode_cli_payload(raw)
+    token = dict(payload["token"])
+    token["access_token"] = antigravity_quota.refresh_access_token(
+        token["refresh_token"], compat.antigravity_user_agent(),
+    )
+    token["expiry"] = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600),
+    )
+    payload["token"] = token
+    return {**snapshot, "payload": encode_cli_payload(payload, base64_encoded)}
 
 
 def write_cli_credentials_file(snapshot):
@@ -806,6 +828,9 @@ def switch(profile_id, target):
     elif target == "cli":
         if snapshot.get("kind") != "keychain" or not snapshot.get("payload"):
             raise RuntimeError("Saved CLI snapshot is invalid")
+        if os.environ.get("KEYSWITCHER_ANTIGRAVITY_SKIP_TOKEN_REFRESH") != "1":
+            snapshot = refresh_cli_snapshot(snapshot)
+        save_vault_snapshot(profile_id, target, snapshot)
         was_running = app_is_running(SHARED_APP_BUNDLE_ID)
         if was_running:
             stop_app(SHARED_APP_BUNDLE_ID)

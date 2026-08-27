@@ -4,6 +4,17 @@
 import keyswitcher
 
 
+def test_tray_display_config():
+    assert keyswitcher.DEFAULT_CONFIG["tray_display"] == "both"
+    assert keyswitcher._coerce_config_value("tray_display", "Codex") == "codex"
+    try:
+        keyswitcher._coerce_config_value("tray_display", "ide")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("invalid tray display should be rejected")
+
+
 def test_confirmed_secondary_reset_replaces_cached_value():
     now = 1_000
     slot = {
@@ -184,6 +195,7 @@ def test_run_rotate_does_not_reacquire_rotator_lock():
 
 
 if __name__ == "__main__":
+    test_tray_display_config()
     test_confirmed_secondary_reset_replaces_cached_value()
     test_transient_zero_uses_second_response()
     test_transient_two_percent_uses_second_response()

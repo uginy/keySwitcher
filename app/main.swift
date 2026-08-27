@@ -85,6 +85,21 @@ struct ConfigResponse: Codable, Sendable {
 struct ConfigData: Codable, Sendable {
     var autoswitch_enabled: Bool?
     var notifications: Bool?
+    var tray_display: String?
+}
+
+enum TrayDisplay: String, CaseIterable, Sendable {
+    case both
+    case codex
+    case antigravity
+
+    var title: String {
+        switch self {
+        case .both: return L10n.trayDisplayBoth
+        case .codex: return L10n.trayDisplayCodex
+        case .antigravity: return L10n.trayDisplayAntigravity
+        }
+    }
 }
 
 // MARK: - Engine client (Process + per-command watchdog, serial utility queue)
@@ -279,6 +294,7 @@ final class AppState: ObservableObject {
     @Published var loginItemEnabled = false
 
     var notificationsEnabled: Bool { config?.notifications ?? true }
+    var trayDisplay: TrayDisplay { TrayDisplay(rawValue: config?.tray_display ?? "") ?? .both }
 }
 
 // MARK: - Status controller (engine orchestration, serial per-kind state machine)
@@ -453,6 +469,20 @@ final class StatusController {
     private func applyConfig(_ config: ConfigData?) {
         guard let config = config else { return }
         state.config = config
+    }
+
+    func setTrayDisplay(_ display: TrayDisplay) {
+        engine.run(["config", "set", "tray_display", display.rawValue], as: ConfigResponse.self) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let response) where response.ok == true:
+                self.applyConfig(response.config)
+            case .success(let response):
+                self.state.lastErrorText = response.error ?? L10n.operationFailed
+            case .failure(let error):
+                self.state.lastErrorText = error.displayText
+            }
+        }
     }
 
     // MARK: Login item (SMAppService)
@@ -1232,6 +1262,23 @@ struct PanelView: View {
                         Text(L10n.languageMenu)
                     }
 
+                    Menu {
+                        ForEach(TrayDisplay.allCases, id: \.rawValue) { display in
+                            Button {
+                                controller.setTrayDisplay(display)
+                            } label: {
+                                HStack {
+                                    Text(display.title)
+                                    if state.trayDisplay == display {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Text(L10n.trayDisplayMenu)
+                    }
+
                     Divider()
                     Button(L10n.quit, role: .destructive) {
                         NSApp.terminate(nil)
@@ -1675,13 +1722,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
             ))
         }
 
-        if state.engineMissing || state.statusFailed {
+        let showCodex = state.trayDisplay != .antigravity
+        let showAntigravity = state.trayDisplay != .codex
+
+        if showCodex, state.engineMissing || state.statusFailed {
             title.append(NSAttributedString(
                 string: "KS ",
                 attributes: [.font: font, .foregroundColor: NSColor.labelColor]
             ))
             title.append(symbolText("exclamationmark.triangle", color: .systemOrange, font: font))
-        } else if let status = state.status {
+        } else if showCodex, let status = state.status {
             let activeAccount = status.accounts?.first(where: { $0.active == true })
                 ?? status.accounts?.first(where: { $0.slot == status.active_slot })
             let accountName = shortAccountName(email: activeAccount?.email, slot: status.active_slot)
@@ -1713,7 +1763,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
                     attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
                 ))
             }
-        } else {
+        } else if showCodex {
             title.append(NSAttributedString(
                 string: "KS",
                 attributes: [.font: font, .foregroundColor: NSColor.labelColor]
@@ -1721,17 +1771,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
         }
 
         // Antigravity section
-        if let agStatus = antigravityController.status,
+        if showAntigravity,
+           let agStatus = antigravityController.status,
            let profiles = agStatus.profiles,
            !profiles.isEmpty {
             let activeProfileID = agStatus.active?["cli"] ?? agStatus.active?["ide"] ?? agStatus.active?.values.first
             if let activeProfile = profiles.first(where: { $0.id == activeProfileID }) ?? profiles.first {
                 let agName = shortAccountName(email: activeProfile.email, slot: nil)
 
-                title.append(NSAttributedString(
-                    string: " | ",
-                    attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
-                ))
+                if showCodex {
+                    title.append(NSAttributedString(
+                        string: " | ",
+                        attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                    ))
+                }
                 title.append(NSAttributedString(
                     string: agName + " ",
                     attributes: [.font: font, .foregroundColor: NSColor.labelColor]
@@ -1809,6 +1862,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
                     ))
                 }
             }
+        } else if showAntigravity && !showCodex {
+            title.append(NSAttributedString(
+                string: "AG",
+                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+            ))
+            title.append(symbolText("exclamationmark.triangle", color: .systemOrange, font: font))
         }
 
         button.attributedTitle = title

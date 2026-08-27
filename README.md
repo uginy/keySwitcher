@@ -22,12 +22,13 @@
 
 - **Single-Click Instant Switching**:
   - **OpenAI Codex**: Swaps token slots, safely persists current token state, performs a graceful restart, and automatically reopens your active conversation thread (`codex://threads/<id>`).
-  - **Google Antigravity**: Simultaneously synchronizes authentication across both **CLI** (macOS Keychain) and **IDE** (SQLite storage) with a single action.
+  - **Google Antigravity**: Simultaneously synchronizes authentication across both **CLI** (macOS Keychain) and **IDE** (SQLite storage) with a single action, refreshing stale CLI access tokens before switching.
 
 - **Live Menu Bar Quota Monitor**:
   - Real-time remaining percentage and color-coded status badges directly in the macOS menu bar using native SF Symbols.
   - **Codex**: 5-hour window (`clock`) and weekly window (`calendar`).
   - **Antigravity**: Independent breakdowns for **Gemini** (`sparkle`) and **Claude / GPT** (`bolt`) quotas.
+  - Configurable menu bar visibility: **Codex**, **Antigravity**, or both.
 
 - **Unified Dual Dashboard**:
   - Compact side-by-side view showing both Codex and Antigravity accounts simultaneously without tab toggling.

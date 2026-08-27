@@ -189,6 +189,23 @@ def main():
         )
         assert refreshed_credentials["access_token"] == "fresh-access"
         assert refreshed_credentials["refresh_token"] == "ide-a-refresh"
+        cli_snapshot = {
+            "kind": "keychain",
+            "payload": "go-keyring-base64:" + base64.b64encode(cli_payload.encode()).decode(),
+        }
+        original_refresh = antigravity.antigravity_quota.refresh_access_token
+        antigravity.antigravity_quota.refresh_access_token = lambda *_: "fresh-cli-access"
+        try:
+            refreshed_cli = antigravity.refresh_cli_snapshot(cli_snapshot)
+        finally:
+            antigravity.antigravity_quota.refresh_access_token = original_refresh
+        assert refreshed_cli["payload"].startswith("go-keyring-base64:")
+        refreshed_cli_credentials = antigravity_quota.extract_cli_credentials(
+            refreshed_cli["payload"]
+        )
+        assert refreshed_cli_credentials["access_token"] == "fresh-cli-access"
+        assert refreshed_cli_credentials["refresh_token"] == "fake-refresh-token"
+        assert refreshed_cli_credentials["expiry"] != "2099-01-01T00:00:00Z"
         legacy_oauth = b"".join((
             protobuf_bytes(1, b"legacy-access"),
             protobuf_bytes(2, b"Bearer"),

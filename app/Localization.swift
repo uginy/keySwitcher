@@ -86,6 +86,10 @@ public enum L10n {
     public static var settings: String { isRu ? "Настройки приложения" : "App settings" }
     public static var launchAtLogin: String { isRu ? "Запускать при входе" : "Launch at login" }
     public static var languageMenu: String { isRu ? "Язык" : "Language" }
+    public static var trayDisplayMenu: String { isRu ? "Показывать в строке меню" : "Show in menu bar" }
+    public static var trayDisplayBoth: String { "Codex + Antigravity" }
+    public static var trayDisplayCodex: String { "Codex" }
+    public static var trayDisplayAntigravity: String { "Antigravity" }
     public static var quit: String { isRu ? "Выйти" : "Quit" }
 
     // Account Card Status
