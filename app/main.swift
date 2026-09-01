@@ -1329,7 +1329,7 @@ struct TrayCustomizationModal: View {
     @ObservedObject var state: AppState
     let controller: StatusController
     @ObservedObject var antigravityController: AntigravityController
-    @Binding var isPresented: Bool
+    var onClose: (() -> Void)? = nil
 
     @State private var draggedSlotID: String? = nil
     @State private var dragOffset: CGFloat = 0
@@ -1357,13 +1357,15 @@ struct TrayCustomizationModal: View {
                         .foregroundColor(.secondary)
                 }
                 Spacer()
-                Button(action: { isPresented = false }) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title3)
-                        .foregroundColor(.secondary)
+                if let onClose = onClose {
+                    Button(action: onClose) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title3)
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(L10n.done)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(L10n.done)
             }
 
             Divider()
@@ -1503,11 +1505,13 @@ struct TrayCustomizationModal: View {
 
                 Spacer()
 
-                Button(L10n.done) {
-                    isPresented = false
+                if let onClose = onClose {
+                    Button(L10n.done) {
+                        onClose()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
             }
         }
         .padding(18)
@@ -1900,6 +1904,54 @@ struct TrayCustomizationModal: View {
     }
 }
 
+// MARK: - Standalone Window Controller for Menu Bar Settings
+
+@MainActor
+final class TraySettingsWindowController: NSObject, NSWindowDelegate {
+    static let shared = TraySettingsWindowController()
+
+    private var window: NSWindow?
+
+    func show(state: AppState, controller: StatusController, antigravityController: AntigravityController) {
+        if let existing = window {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let contentView = TrayCustomizationModal(
+            state: state,
+            controller: controller,
+            antigravityController: antigravityController,
+            onClose: { [weak self] in
+                self?.window?.close()
+            }
+        )
+
+        let hostingController = NSHostingController(rootView: contentView)
+        let newWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 500),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        newWindow.title = L10n.trayModalTitle
+        newWindow.contentViewController = hostingController
+        newWindow.isReleasedWhenClosed = false
+        newWindow.delegate = self
+        newWindow.center()
+        newWindow.level = .floating
+        self.window = newWindow
+
+        newWindow.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        window = nil
+    }
+}
+
 struct PanelView: View {
     @ObservedObject var state: AppState
     let controller: StatusController
@@ -1919,7 +1971,6 @@ struct PanelView: View {
     @State private var dropTargetSlot: Int? = nil
     @State private var dropTargetEdge: VerticalEdge? = nil
     @State private var accountFrames: [Int: CGRect] = [:]
-    @State private var isShowingTrayCustomization = false
     @State private var isFooterSettingsHovered = false
 
     private var refreshDisabled: Bool {
@@ -1940,14 +1991,6 @@ struct PanelView: View {
         }
         .padding(12)
         .frame(width: 580)
-        .sheet(isPresented: $isShowingTrayCustomization) {
-            TrayCustomizationModal(
-                state: state,
-                controller: controller,
-                antigravityController: antigravityController,
-                isPresented: $isShowingTrayCustomization
-            )
-        }
         .alert(L10n.deleteAccountTitle, isPresented: Binding(
             get: { slotToDelete != nil },
             set: { if !$0 { slotToDelete = nil } }
@@ -2007,7 +2050,11 @@ struct PanelView: View {
                     Divider()
 
                     Button {
-                        isShowingTrayCustomization = true
+                        TraySettingsWindowController.shared.show(
+                            state: state,
+                            controller: controller,
+                            antigravityController: antigravityController
+                        )
                     } label: {
                         Label(L10n.customizeTrayMenu, systemImage: "slider.horizontal.3")
                     }
