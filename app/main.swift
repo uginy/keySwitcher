@@ -1394,18 +1394,6 @@ struct TrayCustomizationModal: View {
 
             Divider()
 
-            // Live Preview Box
-            VStack(alignment: .leading, spacing: 6) {
-                Text(L10n.trayPreviewLabel)
-                    .font(.caption2)
-                    .fontWeight(.semibold)
-                    .foregroundColor(.secondary)
-
-                livePreviewBar
-            }
-
-            Divider()
-
             // Active Slots Section
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
@@ -1473,156 +1461,7 @@ struct TrayCustomizationModal: View {
             }
         }
         .padding(20)
-        .frame(width: 780)
-    }
-
-    private var livePreviewBar: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
-                .foregroundColor(.accentColor)
-                .font(.system(size: 13))
-
-            if activeSlots.isEmpty {
-                Text(L10n.emptyTrayHint)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .italic()
-            } else {
-                ForEach(Array(activeSlots.enumerated()), id: \.element.id) { index, slot in
-                    if index > 0 {
-                        Text("|")
-                            .font(.caption2)
-                            .foregroundColor(.secondary.opacity(0.6))
-                    }
-                    previewSlotItem(slot)
-                }
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-        )
-    }
-
-    @ViewBuilder
-    private func previewSlotItem(_ slot: TraySlotItem) -> some View {
-        switch slot {
-        case .codex:
-            let activeAccount = state.status?.accounts?.first(where: { $0.active == true })
-                ?? state.status?.accounts?.first(where: { $0.slot == state.status?.active_slot })
-            let name = shortAccountName(email: activeAccount?.email, slot: state.status?.active_slot)
-            let windows = menuUsageWindows(activeAccount?.usage)
-
-            HStack(spacing: 4) {
-                Text(name)
-                    .font(.caption2)
-                    .fontWeight(.medium)
-                if let short = windows.short?.used_percent {
-                    let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
-                    Image(systemName: "clock")
-                        .font(.system(size: 9))
-                    Text("\(remaining)%")
-                        .font(.caption2)
-                }
-                if let weekly = windows.weekly?.used_percent {
-                    let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
-                    Image(systemName: "calendar")
-                        .font(.system(size: 9))
-                    Text("\(remaining)%")
-                        .font(.caption2)
-                }
-            }
-
-        case .agCliGemini, .agCliClaude:
-            let hasIde = activeSlots.contains { $0 == .agIdeGemini || $0 == .agIdeClaude }
-            let prefix = hasIde ? "CLI: " : ""
-            let activeID = antigravityController.status?.active?["cli"]
-            let profile = antigravityController.status?.profiles?.first(where: { $0.id == activeID })
-                ?? antigravityController.status?.profiles?.first
-            let name = prefix + shortAccountName(email: profile?.email, slot: nil)
-            let quota = profile?.quota
-
-            HStack(spacing: 4) {
-                Text(name)
-                    .font(.caption2)
-                    .fontWeight(.medium)
-
-                if slot == .agCliGemini {
-                    let gUsage = (quota?.gemini?.ok == true && quota?.gemini?.stale != true) ? quota?.gemini : nil
-                    let gWindows = menuUsageWindows(gUsage)
-                    Image(systemName: "sparkle")
-                        .font(.system(size: 9))
-                    if let short = gWindows.short?.used_percent {
-                        let rem = Int(remainingLimitPercent(fromUsed: short).rounded())
-                        Text("\(rem)%").font(.caption2)
-                    } else if let weekly = gWindows.weekly?.used_percent {
-                        let rem = Int(remainingLimitPercent(fromUsed: weekly).rounded())
-                        Text("\(rem)%").font(.caption2)
-                    }
-                } else {
-                    let tUsage = (quota?.thirdParty?.ok == true && quota?.thirdParty?.stale != true) ? quota?.thirdParty : nil
-                    let tWindows = menuUsageWindows(tUsage)
-                    Image(systemName: "bolt.fill")
-                        .font(.system(size: 9))
-                    if let short = tWindows.short?.used_percent {
-                        let rem = Int(remainingLimitPercent(fromUsed: short).rounded())
-                        Text("\(rem)%").font(.caption2)
-                    } else if let weekly = tWindows.weekly?.used_percent {
-                        let rem = Int(remainingLimitPercent(fromUsed: weekly).rounded())
-                        Text("\(rem)%").font(.caption2)
-                    }
-                }
-            }
-
-        case .agIdeGemini, .agIdeClaude:
-            let hasCli = activeSlots.contains { $0 == .agCliGemini || $0 == .agCliClaude }
-            let prefix = hasCli ? "IDE: " : ""
-            let activeID = antigravityController.status?.active?["ide"]
-            let profile = antigravityController.status?.profiles?.first(where: { $0.id == activeID })
-                ?? antigravityController.status?.profiles?.first
-            let name = prefix + shortAccountName(email: profile?.email, slot: nil)
-            let quota = profile?.quota
-
-            HStack(spacing: 4) {
-                Text(name)
-                    .font(.caption2)
-                    .fontWeight(.medium)
-
-                if slot == .agIdeGemini {
-                    let gUsage = (quota?.gemini?.ok == true && quota?.gemini?.stale != true) ? quota?.gemini : nil
-                    let gWindows = menuUsageWindows(gUsage)
-                    Image(systemName: "sparkle")
-                        .font(.system(size: 9))
-                    if let short = gWindows.short?.used_percent {
-                        let rem = Int(remainingLimitPercent(fromUsed: short).rounded())
-                        Text("\(rem)%").font(.caption2)
-                    } else if let weekly = gWindows.weekly?.used_percent {
-                        let rem = Int(remainingLimitPercent(fromUsed: weekly).rounded())
-                        Text("\(rem)%").font(.caption2)
-                    }
-                } else {
-                    let tUsage = (quota?.thirdParty?.ok == true && quota?.thirdParty?.stale != true) ? quota?.thirdParty : nil
-                    let tWindows = menuUsageWindows(tUsage)
-                    Image(systemName: "bolt.fill")
-                        .font(.system(size: 9))
-                    if let short = tWindows.short?.used_percent {
-                        let rem = Int(remainingLimitPercent(fromUsed: short).rounded())
-                        Text("\(rem)%").font(.caption2)
-                    } else if let weekly = tWindows.weekly?.used_percent {
-                        let rem = Int(remainingLimitPercent(fromUsed: weekly).rounded())
-                        Text("\(rem)%").font(.caption2)
-                    }
-                }
-            }
-        }
+        .frame(width: 720)
     }
 
     private var activeSlotsList: some View {
@@ -1926,7 +1765,7 @@ final class TraySettingsWindowController: NSObject, NSWindowDelegate {
 
         let hostingController = NSHostingController(rootView: contentView)
         let newWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 780, height: 530),
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 440),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
