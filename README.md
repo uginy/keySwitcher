@@ -28,7 +28,7 @@
   - Real-time remaining percentage and color-coded status badges directly in the macOS menu bar using native SF Symbols.
   - **Codex**: 5-hour window (`clock`) and weekly window (`calendar`).
   - **Antigravity**: Independent breakdowns for **Gemini** (`sparkle`) and **Claude / GPT** (`bolt`) quotas.
-  - **Interactive Drag-and-Drop Customizer**: Visual settings modal with live real-time menu bar preview to reorder, add, or remove slots (**Codex**, **Agent App / CLI**, **IDE**), and toggle model limits with a single click.
+  - **Interactive Drag-and-Drop Customizer**: Dedicated settings window to reorder, add, or remove menu bar slots with granular control over **OpenAI Codex**, **Antigravity CLI (Gemini)**, **Antigravity CLI (Claude / GPT)**, **Antigravity IDE (Gemini)**, and **Antigravity IDE (Claude / GPT)**.
 
 - **Unified Dual Dashboard**:
   - Compact side-by-side view showing both Codex and Antigravity accounts simultaneously without tab toggling.
