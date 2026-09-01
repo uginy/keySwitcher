@@ -77,7 +77,7 @@ DEFAULT_CONFIG = {
     "tray_display": "both",
     "antigravity_tray_target": "both",
     "antigravity_tray_models": "both",
-    "tray_slots": ["codex", "ag_cli", "ag_ide"],
+    "tray_slots": ["codex", "ag_cli_gemini", "ag_cli_claude", "ag_ide_gemini", "ag_ide_claude"],
 }
 DEFAULT_STATE = {"cooldown_until": 0, "refresh_failures": {}}
 
@@ -975,9 +975,17 @@ def _coerce_config_value(key, value):
             except Exception:
                 value = [s.strip() for s in value.split(",") if s.strip()]
         if isinstance(value, list):
-            valid = {"codex", "ag_cli", "ag_ide"}
-            filtered = [str(x).strip().lower() for x in value if str(x).strip().lower() in valid]
-            return list(dict.fromkeys(filtered))
+            valid = {"codex", "ag_cli_gemini", "ag_cli_claude", "ag_ide_gemini", "ag_ide_claude"}
+            expanded = []
+            for raw in value:
+                token = str(raw).strip().lower()
+                if token == "ag_cli":
+                    expanded.extend(["ag_cli_gemini", "ag_cli_claude"])
+                elif token == "ag_ide":
+                    expanded.extend(["ag_ide_gemini", "ag_ide_claude"])
+                elif token in valid:
+                    expanded.append(token)
+            return list(dict.fromkeys(expanded))
         raise ValueError("%s expects a list of slot IDs" % key)
     if key == "client_id":
         return str(value)

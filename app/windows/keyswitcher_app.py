@@ -780,11 +780,7 @@ class App:
         cfg = (self.codex or {}).get("config") or {}
         slots = cfg.get("tray_slots")
         if not slots or not isinstance(slots, list):
-            slots = ["codex", "ag_cli", "ag_ide"]
-
-        models_cfg = cfg.get("antigravity_tray_models", "both")
-        show_gemini = models_cfg != "claude_gpt"
-        show_claude = models_cfg != "gemini"
+            slots = ["codex", "ag_cli_gemini", "ag_cli_claude", "ag_ide_gemini", "ag_ide_claude"]
 
         for slot in slots:
             if slot == "codex":
@@ -796,9 +792,11 @@ class App:
                     rem = remaining(window.get("used_percent"))
                     if rem is not None:
                         parts.append("Codex: %d%%" % rem)
-            elif slot in ("ag_cli", "ag_ide"):
-                target = "cli" if slot == "ag_cli" else "ide"
-                prefix = ("CLI: " if target == "cli" else "IDE: ") if ("ag_cli" in slots and "ag_ide" in slots) else ""
+            elif slot in ("ag_cli", "ag_ide", "ag_cli_gemini", "ag_cli_claude", "ag_ide_gemini", "ag_ide_claude"):
+                target = "ide" if "ide" in slot else "cli"
+                is_gemini = "gemini" in slot or slot in ("ag_cli", "ag_ide")
+                is_claude = "claude" in slot or slot in ("ag_cli", "ag_ide")
+                prefix = ("CLI: " if target == "cli" else "IDE: ") if any("ide" in s for s in slots) and any("cli" in s for s in slots) else ""
                 ag_active = (self.antigravity or {}).get("active") or {}
                 ag_profiles = (self.antigravity or {}).get("profiles") or []
                 target_id = ag_active.get(target)
@@ -806,14 +804,14 @@ class App:
                 if profile:
                     quota = profile.get("quota") or {}
                     subparts = []
-                    if show_gemini:
+                    if is_gemini:
                         g_usage = quota.get("gemini") or {}
                         if g_usage.get("ok") and not g_usage.get("stale"):
                             w = g_usage.get("primary") or g_usage.get("secondary") or {}
                             g_rem = remaining(w.get("used_percent"))
                             if g_rem is not None:
                                 subparts.append("Gemini: %d%%" % g_rem)
-                    if show_claude:
+                    if is_claude:
                         t_usage = quota.get("third_party") or {}
                         if t_usage.get("ok") and not t_usage.get("stale"):
                             w = t_usage.get("primary") or t_usage.get("secondary") or {}

@@ -93,40 +93,50 @@ struct ConfigData: Codable, Sendable {
 
 enum TraySlotItem: String, CaseIterable, Identifiable, Sendable {
     case codex = "codex"
-    case agCli = "ag_cli"
-    case agIde = "ag_ide"
+    case agCliGemini = "ag_cli_gemini"
+    case agCliClaude = "ag_cli_claude"
+    case agIdeGemini = "ag_ide_gemini"
+    case agIdeClaude = "ag_ide_claude"
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .codex: return L10n.codexSlotTitle
-        case .agCli: return L10n.agCliSlotTitle
-        case .agIde: return L10n.agIdeSlotTitle
+        case .agCliGemini: return L10n.agCliGeminiTitle
+        case .agCliClaude: return L10n.agCliClaudeTitle
+        case .agIdeGemini: return L10n.agIdeGeminiTitle
+        case .agIdeClaude: return L10n.agIdeClaudeTitle
         }
     }
 
     var description: String {
         switch self {
         case .codex: return L10n.codexSlotDesc
-        case .agCli: return L10n.agCliSlotDesc
-        case .agIde: return L10n.agIdeSlotDesc
+        case .agCliGemini: return L10n.agCliGeminiDesc
+        case .agCliClaude: return L10n.agCliClaudeDesc
+        case .agIdeGemini: return L10n.agIdeGeminiDesc
+        case .agIdeClaude: return L10n.agIdeClaudeDesc
         }
     }
 
     var systemIcon: String {
         switch self {
         case .codex: return "circle.hexagongrid.fill"
-        case .agCli: return "terminal.fill"
-        case .agIde: return "chevron.left.forwardslash.chevron.right"
+        case .agCliGemini: return "sparkle"
+        case .agCliClaude: return "bolt.fill"
+        case .agIdeGemini: return "sparkle"
+        case .agIdeClaude: return "bolt.fill"
         }
     }
 
     var iconColor: Color {
         switch self {
         case .codex: return .green
-        case .agCli: return .blue
-        case .agIde: return .purple
+        case .agCliGemini: return .blue
+        case .agCliClaude: return .orange
+        case .agIdeGemini: return .purple
+        case .agIdeClaude: return .pink
         }
     }
 }
@@ -374,7 +384,19 @@ final class AppState: ObservableObject {
     }
     var traySlots: [TraySlotItem] {
         if let rawSlots = config?.tray_slots {
-            return rawSlots.compactMap { TraySlotItem(rawValue: $0) }
+            var result: [TraySlotItem] = []
+            for raw in rawSlots {
+                if raw == "ag_cli" {
+                    result.append(.agCliGemini)
+                    result.append(.agCliClaude)
+                } else if raw == "ag_ide" {
+                    result.append(.agIdeGemini)
+                    result.append(.agIdeClaude)
+                } else if let item = TraySlotItem(rawValue: raw) {
+                    result.append(item)
+                }
+            }
+            return result
         }
         var slots: [TraySlotItem] = []
         if trayDisplay != .antigravity {
@@ -382,13 +404,15 @@ final class AppState: ObservableObject {
         }
         if trayDisplay != .codex {
             if antigravityTrayTarget != .ide {
-                slots.append(.agCli)
+                if antigravityTrayModels != .claudeGpt { slots.append(.agCliGemini) }
+                if antigravityTrayModels != .gemini { slots.append(.agCliClaude) }
             }
             if antigravityTrayTarget != .cli {
-                slots.append(.agIde)
+                if antigravityTrayModels != .claudeGpt { slots.append(.agIdeGemini) }
+                if antigravityTrayModels != .gemini { slots.append(.agIdeClaude) }
             }
         }
-        return slots.isEmpty ? [.codex, .agCli, .agIde] : slots
+        return slots.isEmpty ? [.codex, .agCliGemini, .agCliClaude, .agIdeGemini, .agIdeClaude] : slots
     }
 }
 
@@ -1380,71 +1404,6 @@ struct TrayCustomizationModal: View {
                 livePreviewBar
             }
 
-            // Antigravity Model Toggles
-            HStack(spacing: 12) {
-                Text(L10n.modelSelectionSection)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-
-                HStack(spacing: 6) {
-                    let isGeminiOn = state.antigravityTrayModels != .claudeGpt
-                    let isClaudeOn = state.antigravityTrayModels != .gemini
-
-                    Button {
-                        toggleModel(gemini: !isGeminiOn, claude: isClaudeOn)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "sparkle")
-                                .font(.system(size: 10))
-                            Text(L10n.showGeminiLimits)
-                                .font(.caption2)
-                            if isGeminiOn {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 9, weight: .bold))
-                            }
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(isGeminiOn ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(isGeminiOn ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1)
-                        )
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        toggleModel(gemini: isGeminiOn, claude: !isClaudeOn)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "bolt.fill")
-                                .font(.system(size: 10))
-                            Text(L10n.showClaudeLimits)
-                                .font(.caption2)
-                            if isClaudeOn {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 9, weight: .bold))
-                            }
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(isClaudeOn ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(isClaudeOn ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.vertical, 2)
-
             Divider()
 
             // Active Slots Section
@@ -1496,8 +1455,7 @@ struct TrayCustomizationModal: View {
             // Footer
             HStack {
                 Button(L10n.resetToDefault) {
-                    controller.setTraySlots([.codex, .agCli, .agIde])
-                    controller.setAntigravityTrayModels(.both)
+                    controller.setTraySlots([.codex, .agCliGemini, .agCliClaude, .agIdeGemini, .agIdeClaude])
                 }
                 .buttonStyle(.borderless)
                 .font(.caption)
@@ -1583,49 +1541,84 @@ struct TrayCustomizationModal: View {
                 }
             }
 
-        case .agCli, .agIde:
-            let target = (slot == .agCli) ? "cli" : "ide"
-            let targetPrefix = (activeSlots.contains(.agCli) && activeSlots.contains(.agIde)) ? (target == "cli" ? "CLI: " : "IDE: ") : ""
-            let activeID = antigravityController.status?.active?[target]
+        case .agCliGemini, .agCliClaude:
+            let hasIde = activeSlots.contains { $0 == .agIdeGemini || $0 == .agIdeClaude }
+            let prefix = hasIde ? "CLI: " : ""
+            let activeID = antigravityController.status?.active?["cli"]
             let profile = antigravityController.status?.profiles?.first(where: { $0.id == activeID })
                 ?? antigravityController.status?.profiles?.first
-            let name = targetPrefix + shortAccountName(email: profile?.email, slot: nil)
-            let showGemini = state.antigravityTrayModels != .claudeGpt
-            let showClaude = state.antigravityTrayModels != .gemini
+            let name = prefix + shortAccountName(email: profile?.email, slot: nil)
+            let quota = profile?.quota
 
             HStack(spacing: 4) {
                 Text(name)
                     .font(.caption2)
                     .fontWeight(.medium)
 
-                if let quota = profile?.quota {
-                    let gUsage = (quota.gemini?.ok == true && quota.gemini?.stale != true) ? quota.gemini : nil
-                    let tUsage = (quota.thirdParty?.ok == true && quota.thirdParty?.stale != true) ? quota.thirdParty : nil
+                if slot == .agCliGemini {
+                    let gUsage = (quota?.gemini?.ok == true && quota?.gemini?.stale != true) ? quota?.gemini : nil
                     let gWindows = menuUsageWindows(gUsage)
-                    let tWindows = menuUsageWindows(tUsage)
-
-                    if showGemini {
-                        Image(systemName: "sparkle")
-                            .font(.system(size: 9))
-                        if let short = gWindows.short?.used_percent {
-                            let rem = Int(remainingLimitPercent(fromUsed: short).rounded())
-                            Text("\(rem)%").font(.caption2)
-                        } else if let weekly = gWindows.weekly?.used_percent {
-                            let rem = Int(remainingLimitPercent(fromUsed: weekly).rounded())
-                            Text("\(rem)%").font(.caption2)
-                        }
+                    Image(systemName: "sparkle")
+                        .font(.system(size: 9))
+                    if let short = gWindows.short?.used_percent {
+                        let rem = Int(remainingLimitPercent(fromUsed: short).rounded())
+                        Text("\(rem)%").font(.caption2)
+                    } else if let weekly = gWindows.weekly?.used_percent {
+                        let rem = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                        Text("\(rem)%").font(.caption2)
                     }
+                } else {
+                    let tUsage = (quota?.thirdParty?.ok == true && quota?.thirdParty?.stale != true) ? quota?.thirdParty : nil
+                    let tWindows = menuUsageWindows(tUsage)
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 9))
+                    if let short = tWindows.short?.used_percent {
+                        let rem = Int(remainingLimitPercent(fromUsed: short).rounded())
+                        Text("\(rem)%").font(.caption2)
+                    } else if let weekly = tWindows.weekly?.used_percent {
+                        let rem = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                        Text("\(rem)%").font(.caption2)
+                    }
+                }
+            }
 
-                    if showClaude {
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: 9))
-                        if let short = tWindows.short?.used_percent {
-                            let rem = Int(remainingLimitPercent(fromUsed: short).rounded())
-                            Text("\(rem)%").font(.caption2)
-                        } else if let weekly = tWindows.weekly?.used_percent {
-                            let rem = Int(remainingLimitPercent(fromUsed: weekly).rounded())
-                            Text("\(rem)%").font(.caption2)
-                        }
+        case .agIdeGemini, .agIdeClaude:
+            let hasCli = activeSlots.contains { $0 == .agCliGemini || $0 == .agCliClaude }
+            let prefix = hasCli ? "IDE: " : ""
+            let activeID = antigravityController.status?.active?["ide"]
+            let profile = antigravityController.status?.profiles?.first(where: { $0.id == activeID })
+                ?? antigravityController.status?.profiles?.first
+            let name = prefix + shortAccountName(email: profile?.email, slot: nil)
+            let quota = profile?.quota
+
+            HStack(spacing: 4) {
+                Text(name)
+                    .font(.caption2)
+                    .fontWeight(.medium)
+
+                if slot == .agIdeGemini {
+                    let gUsage = (quota?.gemini?.ok == true && quota?.gemini?.stale != true) ? quota?.gemini : nil
+                    let gWindows = menuUsageWindows(gUsage)
+                    Image(systemName: "sparkle")
+                        .font(.system(size: 9))
+                    if let short = gWindows.short?.used_percent {
+                        let rem = Int(remainingLimitPercent(fromUsed: short).rounded())
+                        Text("\(rem)%").font(.caption2)
+                    } else if let weekly = gWindows.weekly?.used_percent {
+                        let rem = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                        Text("\(rem)%").font(.caption2)
+                    }
+                } else {
+                    let tUsage = (quota?.thirdParty?.ok == true && quota?.thirdParty?.stale != true) ? quota?.thirdParty : nil
+                    let tWindows = menuUsageWindows(tUsage)
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 9))
+                    if let short = tWindows.short?.used_percent {
+                        let rem = Int(remainingLimitPercent(fromUsed: short).rounded())
+                        Text("\(rem)%").font(.caption2)
+                    } else if let weekly = tWindows.weekly?.used_percent {
+                        let rem = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                        Text("\(rem)%").font(.caption2)
                     }
                 }
             }
@@ -1913,7 +1906,10 @@ final class TraySettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
 
     func show(state: AppState, controller: StatusController, antigravityController: AntigravityController) {
+        AppDelegate.shared?.closePopover(nil)
+
         if let existing = window {
+            existing.center()
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -2389,6 +2385,8 @@ struct PanelView: View {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @preconcurrency UNUserNotificationCenterDelegate {
+    static weak var shared: AppDelegate?
+
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private var eventMonitor: Any?
@@ -2403,6 +2401,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
     private var antigravitySubscription: AnyCancellable?
     private var languageSubscription: AnyCancellable?
     private var antigravityNotificationObserver: NSObjectProtocol?
+
+    override init() {
+        super.init()
+        Self.shared = self
+    }
 
     // MARK: Lifecycle
 
@@ -2503,8 +2506,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
         }
 
         let slots = state.traySlots
-        let showGemini = state.antigravityTrayModels != .claudeGpt
-        let showClaude = state.antigravityTrayModels != .gemini
 
         for (index, slot) in slots.enumerated() {
             if index > 0 {
@@ -2561,86 +2562,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
                     ))
                 }
 
-            case .agCli, .agIde:
-                let target = (slot == .agCli) ? "cli" : "ide"
-                let targetPrefix = (slots.contains(.agCli) && slots.contains(.agIde)) ? (target == "cli" ? "CLI: " : "IDE: ") : ""
+            case .agCliGemini, .agCliClaude:
+                let hasIde = slots.contains { $0 == .agIdeGemini || $0 == .agIdeClaude }
+                let prefix = hasIde ? "CLI: " : ""
+                let isGemini = (slot == .agCliGemini)
 
                 if let agStatus = antigravityController.status,
                    let profiles = agStatus.profiles,
                    !profiles.isEmpty {
-                    let activeProfileID = agStatus.active?[target]
+                    let activeProfileID = agStatus.active?["cli"]
                     let profile = profiles.first(where: { $0.id == activeProfileID }) ?? profiles.first
 
                     if let profile = profile {
-                        let agName = targetPrefix + shortAccountName(email: profile.email, slot: nil)
+                        let agName = prefix + shortAccountName(email: profile.email, slot: nil)
                         title.append(NSAttributedString(
                             string: agName + " ",
                             attributes: [.font: font, .foregroundColor: NSColor.labelColor]
                         ))
 
                         let quota = profile.quota
-                        let gUsage = (quota?.gemini?.ok == true && quota?.gemini?.stale != true) ? quota?.gemini : nil
-                        let tUsage = (quota?.thirdParty?.ok == true && quota?.thirdParty?.stale != true) ? quota?.thirdParty : nil
-
-                        let gWindows = menuUsageWindows(gUsage)
-                        let tWindows = menuUsageWindows(tUsage)
-
                         var appendedAny = false
 
-                        // Gemini (sparkle)
-                        if showGemini && (gWindows.short != nil || gWindows.weekly != nil) {
-                            title.append(symbolText("sparkle", color: .secondaryLabelColor, font: font))
-                            title.append(NSAttributedString(
-                                string: " ",
-                                attributes: [.font: font]
-                            ))
-                            let gAllowed = gUsage?.allowed != false
-                            if let short = gWindows.short?.used_percent {
-                                let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
-                                appendWindow(symbol: "clock", remaining: remaining, allowed: gAllowed)
-                            }
-                            if let weekly = gWindows.weekly?.used_percent {
-                                let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
-                                if gWindows.short != nil {
-                                    title.append(NSAttributedString(
-                                        string: "  ",
-                                        attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
-                                    ))
+                        if isGemini {
+                            let gUsage = (quota?.gemini?.ok == true && quota?.gemini?.stale != true) ? quota?.gemini : nil
+                            let gWindows = menuUsageWindows(gUsage)
+                            if gWindows.short != nil || gWindows.weekly != nil {
+                                title.append(symbolText("sparkle", color: .secondaryLabelColor, font: font))
+                                title.append(NSAttributedString(string: " ", attributes: [.font: font]))
+                                let gAllowed = gUsage?.allowed != false
+                                if let short = gWindows.short?.used_percent {
+                                    let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
+                                    appendWindow(symbol: "clock", remaining: remaining, allowed: gAllowed)
                                 }
-                                appendWindow(symbol: "calendar", remaining: remaining, allowed: gAllowed)
-                            }
-                            appendedAny = true
-                        }
-
-                        // Claude / GPT (bolt.fill)
-                        if showClaude && (tWindows.short != nil || tWindows.weekly != nil) {
-                            if appendedAny {
-                                title.append(NSAttributedString(
-                                    string: "   ",
-                                    attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
-                                ))
-                            }
-                            title.append(symbolText("bolt.fill", color: .secondaryLabelColor, font: font))
-                            title.append(NSAttributedString(
-                                string: " ",
-                                attributes: [.font: font]
-                            ))
-                            let tAllowed = tUsage?.allowed != false
-                            if let short = tWindows.short?.used_percent {
-                                let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
-                                appendWindow(symbol: "clock", remaining: remaining, allowed: tAllowed)
-                            }
-                            if let weekly = tWindows.weekly?.used_percent {
-                                let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
-                                if tWindows.short != nil {
-                                    title.append(NSAttributedString(
-                                        string: "  ",
-                                        attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
-                                    ))
+                                if let weekly = gWindows.weekly?.used_percent {
+                                    let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                                    if gWindows.short != nil {
+                                        title.append(NSAttributedString(string: "  ", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+                                    }
+                                    appendWindow(symbol: "calendar", remaining: remaining, allowed: gAllowed)
                                 }
-                                appendWindow(symbol: "calendar", remaining: remaining, allowed: tAllowed)
+                                appendedAny = true
                             }
-                            appendedAny = true
+                        } else {
+                            let tUsage = (quota?.thirdParty?.ok == true && quota?.thirdParty?.stale != true) ? quota?.thirdParty : nil
+                            let tWindows = menuUsageWindows(tUsage)
+                            if tWindows.short != nil || tWindows.weekly != nil {
+                                title.append(symbolText("bolt.fill", color: .secondaryLabelColor, font: font))
+                                title.append(NSAttributedString(string: " ", attributes: [.font: font]))
+                                let tAllowed = tUsage?.allowed != false
+                                if let short = tWindows.short?.used_percent {
+                                    let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
+                                    appendWindow(symbol: "clock", remaining: remaining, allowed: tAllowed)
+                                }
+                                if let weekly = tWindows.weekly?.used_percent {
+                                    let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                                    if tWindows.short != nil {
+                                        title.append(NSAttributedString(string: "  ", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+                                    }
+                                    appendWindow(symbol: "calendar", remaining: remaining, allowed: tAllowed)
+                                }
+                                appendedAny = true
+                            }
                         }
 
                         if !appendedAny {
@@ -2652,7 +2634,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
                     }
                 } else {
                     title.append(NSAttributedString(
-                        string: target == "cli" ? "AG(CLI)" : "AG(IDE)",
+                        string: isGemini ? "AG(CLI ✨)" : "AG(CLI ⚡)",
+                        attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+                    ))
+                    title.append(symbolText("exclamationmark.triangle", color: .systemOrange, font: font))
+                }
+
+            case .agIdeGemini, .agIdeClaude:
+                let hasCli = slots.contains { $0 == .agCliGemini || $0 == .agCliClaude }
+                let prefix = hasCli ? "IDE: " : ""
+                let isGemini = (slot == .agIdeGemini)
+
+                if let agStatus = antigravityController.status,
+                   let profiles = agStatus.profiles,
+                   !profiles.isEmpty {
+                    let activeProfileID = agStatus.active?["ide"]
+                    let profile = profiles.first(where: { $0.id == activeProfileID }) ?? profiles.first
+
+                    if let profile = profile {
+                        let agName = prefix + shortAccountName(email: profile.email, slot: nil)
+                        title.append(NSAttributedString(
+                            string: agName + " ",
+                            attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+                        ))
+
+                        let quota = profile.quota
+                        var appendedAny = false
+
+                        if isGemini {
+                            let gUsage = (quota?.gemini?.ok == true && quota?.gemini?.stale != true) ? quota?.gemini : nil
+                            let gWindows = menuUsageWindows(gUsage)
+                            if gWindows.short != nil || gWindows.weekly != nil {
+                                title.append(symbolText("sparkle", color: .secondaryLabelColor, font: font))
+                                title.append(NSAttributedString(string: " ", attributes: [.font: font]))
+                                let gAllowed = gUsage?.allowed != false
+                                if let short = gWindows.short?.used_percent {
+                                    let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
+                                    appendWindow(symbol: "clock", remaining: remaining, allowed: gAllowed)
+                                }
+                                if let weekly = gWindows.weekly?.used_percent {
+                                    let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                                    if gWindows.short != nil {
+                                        title.append(NSAttributedString(string: "  ", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+                                    }
+                                    appendWindow(symbol: "calendar", remaining: remaining, allowed: gAllowed)
+                                }
+                                appendedAny = true
+                            }
+                        } else {
+                            let tUsage = (quota?.thirdParty?.ok == true && quota?.thirdParty?.stale != true) ? quota?.thirdParty : nil
+                            let tWindows = menuUsageWindows(tUsage)
+                            if tWindows.short != nil || tWindows.weekly != nil {
+                                title.append(symbolText("bolt.fill", color: .secondaryLabelColor, font: font))
+                                title.append(NSAttributedString(string: " ", attributes: [.font: font]))
+                                let tAllowed = tUsage?.allowed != false
+                                if let short = tWindows.short?.used_percent {
+                                    let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
+                                    appendWindow(symbol: "clock", remaining: remaining, allowed: tAllowed)
+                                }
+                                if let weekly = tWindows.weekly?.used_percent {
+                                    let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                                    if tWindows.short != nil {
+                                        title.append(NSAttributedString(string: "  ", attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]))
+                                    }
+                                    appendWindow(symbol: "calendar", remaining: remaining, allowed: tAllowed)
+                                }
+                                appendedAny = true
+                            }
+                        }
+
+                        if !appendedAny {
+                            title.append(NSAttributedString(
+                                string: "…",
+                                attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                            ))
+                        }
+                    }
+                } else {
+                    title.append(NSAttributedString(
+                        string: isGemini ? "AG(IDE ✨)" : "AG(IDE ⚡)",
                         attributes: [.font: font, .foregroundColor: NSColor.labelColor]
                     ))
                     title.append(symbolText("exclamationmark.triangle", color: .systemOrange, font: font))
@@ -2716,7 +2776,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
         startEventMonitors()
     }
 
-    private func closePopover(_ sender: Any?) {
+    func closePopover(_ sender: Any?) {
         stopEventMonitors()
         if popover.isShown {
             popover.performClose(sender)

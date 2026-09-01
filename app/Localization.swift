@@ -95,6 +95,14 @@ public enum L10n {
     public static var emptyTrayHint: String { isRu ? "Строка меню пуста — добавьте элементы ниже" : "Menu bar is empty — add items below" }
     public static var codexSlotTitle: String { "OpenAI Codex" }
     public static var codexSlotDesc: String { isRu ? "Активный аккаунт + лимиты 5ч и недели" : "Active account + 5h & weekly limits" }
+    public static var agCliGeminiTitle: String { isRu ? "Antigravity CLI: Gemini" : "Antigravity CLI: Gemini" }
+    public static var agCliGeminiDesc: String { isRu ? "Лимиты Gemini для Agent App / CLI" : "Gemini limits for Agent App / CLI" }
+    public static var agCliClaudeTitle: String { isRu ? "Antigravity CLI: Claude / GPT" : "Antigravity CLI: Claude / GPT" }
+    public static var agCliClaudeDesc: String { isRu ? "Лимиты Claude / GPT для Agent App / CLI" : "Claude / GPT limits for Agent App / CLI" }
+    public static var agIdeGeminiTitle: String { isRu ? "Antigravity IDE: Gemini" : "Antigravity IDE: Gemini" }
+    public static var agIdeGeminiDesc: String { isRu ? "Лимиты Gemini для IDE" : "Gemini limits for IDE" }
+    public static var agIdeClaudeTitle: String { isRu ? "Antigravity IDE: Claude / GPT" : "Antigravity IDE: Claude / GPT" }
+    public static var agIdeClaudeDesc: String { isRu ? "Лимиты Claude / GPT для IDE" : "Claude / GPT limits for IDE" }
     public static var agCliSlotTitle: String { "Antigravity (Agent App / CLI)" }
     public static var agCliSlotDesc: String { isRu ? "Активный аккаунт Agent / CLI + лимиты" : "Active Agent / CLI account + limits" }
     public static var agIdeSlotTitle: String { "Antigravity (IDE)" }

@@ -37,9 +37,9 @@ def test_tray_display_config():
     else:
         raise AssertionError("invalid antigravity tray models should be rejected")
 
-    assert keyswitcher.DEFAULT_CONFIG["tray_slots"] == ["codex", "ag_cli", "ag_ide"]
-    assert keyswitcher._coerce_config_value("tray_slots", '["ag_cli", "codex"]') == ["ag_cli", "codex"]
-    assert keyswitcher._coerce_config_value("tray_slots", "codex,ag_ide") == ["codex", "ag_ide"]
+    assert keyswitcher.DEFAULT_CONFIG["tray_slots"] == ["codex", "ag_cli_gemini", "ag_cli_claude", "ag_ide_gemini", "ag_ide_claude"]
+    assert keyswitcher._coerce_config_value("tray_slots", '["ag_cli_claude", "codex"]') == ["ag_cli_claude", "codex"]
+    assert keyswitcher._coerce_config_value("tray_slots", "codex,ag_cli") == ["codex", "ag_cli_gemini", "ag_cli_claude"]
     assert keyswitcher._coerce_config_value("tray_slots", ["codex", "invalid", "codex"]) == ["codex"]
 
 
