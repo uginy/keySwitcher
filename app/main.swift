@@ -86,6 +86,8 @@ struct ConfigData: Codable, Sendable {
     var autoswitch_enabled: Bool?
     var notifications: Bool?
     var tray_display: String?
+    var antigravity_tray_target: String?
+    var antigravity_tray_models: String?
 }
 
 enum TrayDisplay: String, CaseIterable, Sendable {
@@ -98,6 +100,34 @@ enum TrayDisplay: String, CaseIterable, Sendable {
         case .both: return L10n.trayDisplayBoth
         case .codex: return L10n.trayDisplayCodex
         case .antigravity: return L10n.trayDisplayAntigravity
+        }
+    }
+}
+
+enum AntigravityTrayTarget: String, CaseIterable, Sendable {
+    case both
+    case cli
+    case ide
+
+    var title: String {
+        switch self {
+        case .both: return L10n.antigravityTrayTargetBoth
+        case .cli: return L10n.antigravityTrayTargetCli
+        case .ide: return L10n.antigravityTrayTargetIde
+        }
+    }
+}
+
+enum AntigravityTrayModels: String, CaseIterable, Sendable {
+    case both
+    case gemini
+    case claudeGpt = "claude_gpt"
+
+    var title: String {
+        switch self {
+        case .both: return L10n.antigravityTrayBoth
+        case .gemini: return L10n.antigravityTrayGemini
+        case .claudeGpt: return L10n.antigravityTrayClaudeGpt
         }
     }
 }
@@ -295,6 +325,12 @@ final class AppState: ObservableObject {
 
     var notificationsEnabled: Bool { config?.notifications ?? true }
     var trayDisplay: TrayDisplay { TrayDisplay(rawValue: config?.tray_display ?? "") ?? .both }
+    var antigravityTrayTarget: AntigravityTrayTarget {
+        AntigravityTrayTarget(rawValue: config?.antigravity_tray_target ?? "") ?? .both
+    }
+    var antigravityTrayModels: AntigravityTrayModels {
+        AntigravityTrayModels(rawValue: config?.antigravity_tray_models ?? "") ?? .both
+    }
 }
 
 // MARK: - Status controller (engine orchestration, serial per-kind state machine)
@@ -472,8 +508,39 @@ final class StatusController {
     }
 
     func setTrayDisplay(_ display: TrayDisplay) {
+        state.config?.tray_display = display.rawValue
         engine.run(["config", "set", "tray_display", display.rawValue], as: ConfigResponse.self) { [weak self] result in
-            guard let self else { return }
+            guard let self = self else { return }
+            switch result {
+            case .success(let response) where response.ok == true:
+                self.applyConfig(response.config)
+            case .success(let response):
+                self.state.lastErrorText = response.error ?? L10n.operationFailed
+            case .failure(let error):
+                self.state.lastErrorText = error.displayText
+            }
+        }
+    }
+
+    func setAntigravityTrayTarget(_ target: AntigravityTrayTarget) {
+        state.config?.antigravity_tray_target = target.rawValue
+        engine.run(["config", "set", "antigravity_tray_target", target.rawValue], as: ConfigResponse.self) { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success(let response) where response.ok == true:
+                self.applyConfig(response.config)
+            case .success(let response):
+                self.state.lastErrorText = response.error ?? L10n.operationFailed
+            case .failure(let error):
+                self.state.lastErrorText = error.displayText
+            }
+        }
+    }
+
+    func setAntigravityTrayModels(_ models: AntigravityTrayModels) {
+        state.config?.antigravity_tray_models = models.rawValue
+        engine.run(["config", "set", "antigravity_tray_models", models.rawValue], as: ConfigResponse.self) { [weak self] result in
+            guard let self = self else { return }
             switch result {
             case .success(let response) where response.ok == true:
                 self.applyConfig(response.config)
@@ -1279,6 +1346,40 @@ struct PanelView: View {
                         Text(L10n.trayDisplayMenu)
                     }
 
+                    Menu {
+                        ForEach(AntigravityTrayTarget.allCases, id: \.rawValue) { targetOption in
+                            Button {
+                                controller.setAntigravityTrayTarget(targetOption)
+                            } label: {
+                                HStack {
+                                    Text(targetOption.title)
+                                    if state.antigravityTrayTarget == targetOption {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Text(L10n.antigravityTrayTargetMenu)
+                    }
+
+                    Menu {
+                        ForEach(AntigravityTrayModels.allCases, id: \.rawValue) { modelOption in
+                            Button {
+                                controller.setAntigravityTrayModels(modelOption)
+                            } label: {
+                                HStack {
+                                    Text(modelOption.title)
+                                    if state.antigravityTrayModels == modelOption {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        Text(L10n.antigravityTrayMenu)
+                    }
+
                     Divider()
                     Button(L10n.quit, role: .destructive) {
                         NSApp.terminate(nil)
@@ -1775,11 +1876,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
            let agStatus = antigravityController.status,
            let profiles = agStatus.profiles,
            !profiles.isEmpty {
-            let activeProfileID = agStatus.active?["cli"] ?? agStatus.active?["ide"] ?? agStatus.active?.values.first
-            if let activeProfile = profiles.first(where: { $0.id == activeProfileID }) ?? profiles.first {
-                let agName = shortAccountName(email: activeProfile.email, slot: nil)
+            let showGemini = state.antigravityTrayModels != .claudeGpt
+            let showClaude = state.antigravityTrayModels != .gemini
+            let targetPref = state.antigravityTrayTarget
 
-                if showCodex {
+            let cliID = agStatus.active?["cli"]
+            let ideID = agStatus.active?["ide"]
+
+            let cliProfile = profiles.first(where: { $0.id == cliID })
+            let ideProfile = profiles.first(where: { $0.id == ideID })
+
+            var sectionsToRender: [(prefix: String?, profile: AntigravityProfile)] = []
+
+            switch targetPref {
+            case .cli:
+                if let p = cliProfile ?? profiles.first {
+                    sectionsToRender.append((nil, p))
+                }
+            case .ide:
+                if let p = ideProfile ?? profiles.first {
+                    sectionsToRender.append((nil, p))
+                }
+            case .both:
+                if let cli = cliProfile, let ide = ideProfile, cli.id != ide.id {
+                    sectionsToRender.append(("CLI: ", cli))
+                    sectionsToRender.append(("IDE: ", ide))
+                } else if let p = cliProfile ?? ideProfile ?? profiles.first {
+                    sectionsToRender.append((nil, p))
+                }
+            }
+
+            for (index, item) in sectionsToRender.enumerated() {
+                let profile = item.profile
+                let agName = (item.prefix ?? "") + shortAccountName(email: profile.email, slot: nil)
+
+                if showCodex || index > 0 {
                     title.append(NSAttributedString(
                         string: " | ",
                         attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
@@ -1790,7 +1921,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
                     attributes: [.font: font, .foregroundColor: NSColor.labelColor]
                 ))
 
-                let quota = activeProfile.quota
+                let quota = profile.quota
                 let gUsage = (quota?.gemini?.ok == true && quota?.gemini?.stale != true) ? quota?.gemini : nil
                 let tUsage = (quota?.thirdParty?.ok == true && quota?.thirdParty?.stale != true) ? quota?.thirdParty : nil
 
@@ -1800,7 +1931,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
                 var appendedAny = false
 
                 // Gemini (sparkle)
-                if gWindows.short != nil || gWindows.weekly != nil {
+                if showGemini && (gWindows.short != nil || gWindows.weekly != nil) {
                     title.append(symbolText("sparkle", color: .secondaryLabelColor, font: font))
                     title.append(NSAttributedString(
                         string: " ",
@@ -1825,7 +1956,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
                 }
 
                 // Claude / GPT (bolt.fill)
-                if tWindows.short != nil || tWindows.weekly != nil {
+                if showClaude && (tWindows.short != nil || tWindows.weekly != nil) {
                     if appendedAny {
                         title.append(NSAttributedString(
                             string: "   ",

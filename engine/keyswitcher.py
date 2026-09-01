@@ -75,6 +75,8 @@ DEFAULT_CONFIG = {
     "autoswitch_enabled": False,  # opt-in: ON drives the silent reactive daemon
     "notifications": True,
     "tray_display": "both",
+    "antigravity_tray_target": "both",
+    "antigravity_tray_models": "both",
 }
 DEFAULT_STATE = {"cooldown_until": 0, "refresh_failures": {}}
 
@@ -943,6 +945,24 @@ def _coerce_config_value(key, value):
         if lowered in ("both", "codex", "antigravity"):
             return lowered
         raise ValueError("%s expects both/codex/antigravity" % key)
+    if key in ("antigravity_tray_target", "antigravity_target"):
+        lowered = value.strip().lower()
+        if lowered in ("both", "all"):
+            return "both"
+        if lowered in ("cli", "agent", "agent_cli"):
+            return "cli"
+        if lowered in ("ide",):
+            return "ide"
+        raise ValueError("%s expects both/cli/ide" % key)
+    if key in ("antigravity_tray_models", "antigravity_tray_display"):
+        lowered = value.strip().lower()
+        if lowered in ("both", "all"):
+            return "both"
+        if lowered in ("gemini",):
+            return "gemini"
+        if lowered in ("claude_gpt", "claude-gpt", "claude", "gpt", "third_party", "thirdparty", "3p"):
+            return "claude_gpt"
+        raise ValueError("%s expects both/gemini/claude_gpt" % key)
     if key == "client_id":
         return str(value)
     raise ValueError("unknown config key: %s" % key)

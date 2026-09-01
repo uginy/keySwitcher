@@ -776,16 +776,67 @@ class App:
     def _set_status(self, text, error=False):
         if self.dashboard and self.dashboard.winfo_exists():
             self.dashboard.set_status(text, error=error)
-        rem = None
+        parts = []
         accounts = (self.codex or {}).get("accounts") or []
         active = next((a for a in accounts if a.get("active")), None)
         if active:
             usage = active.get("usage") or {}
             window = usage.get("primary") or usage.get("secondary") or {}
             rem = remaining(window.get("used_percent"))
+            if rem is not None:
+                parts.append("Codex: %d%%" % rem)
+
+        cfg = (self.codex or {}).get("config") or {}
+        target_cfg = cfg.get("antigravity_tray_target", "both")
+        models_cfg = cfg.get("antigravity_tray_models", "both")
+        show_gemini = models_cfg != "claude_gpt"
+        show_claude = models_cfg != "gemini"
+
+        ag_active = (self.antigravity or {}).get("active") or {}
+        ag_profiles = (self.antigravity or {}).get("profiles") or []
+        cli_id = ag_active.get("cli")
+        ide_id = ag_active.get("ide")
+        cli_profile = next((p for p in ag_profiles if p.get("id") == cli_id), None)
+        ide_profile = next((p for p in ag_profiles if p.get("id") == ide_id), None)
+
+        sections = []
+        if target_cfg == "cli":
+            if cli_profile or ag_profiles:
+                sections.append(("", cli_profile or ag_profiles[0]))
+        elif target_cfg == "ide":
+            if ide_profile or ag_profiles:
+                sections.append(("", ide_profile or ag_profiles[0]))
+        else:
+            if cli_profile and ide_profile and cli_profile.get("id") != ide_profile.get("id"):
+                sections.append(("CLI: ", cli_profile))
+                sections.append(("IDE: ", ide_profile))
+            elif cli_profile or ide_profile or ag_profiles:
+                sections.append(("", cli_profile or ide_profile or ag_profiles[0]))
+
+        for prefix, profile in sections:
+            quota = profile.get("quota") or {}
+            subparts = []
+            if show_gemini:
+                g_usage = quota.get("gemini") or {}
+                if g_usage.get("ok") and not g_usage.get("stale"):
+                    w = g_usage.get("primary") or g_usage.get("secondary") or {}
+                    g_rem = remaining(w.get("used_percent"))
+                    if g_rem is not None:
+                        subparts.append("Gemini: %d%%" % g_rem)
+            if show_claude:
+                t_usage = quota.get("third_party") or {}
+                if t_usage.get("ok") and not t_usage.get("stale"):
+                    w = t_usage.get("primary") or t_usage.get("secondary") or {}
+                    t_rem = remaining(w.get("used_percent"))
+                    if t_rem is not None:
+                        subparts.append("Claude: %d%%" % t_rem)
+            if subparts:
+                label = prefix + ", ".join(subparts) if prefix else ", ".join(subparts)
+                parts.append(label)
+
         tip = "KeySwitcher"
-        if rem is not None:
-            tip = "KeySwitcher  %d%%" % rem
+        if parts:
+            tip = "KeySwitcher  " + " | ".join(parts)
         if text:
             tip = "%s  ·  %s" % (tip, text)
         if self.tray:

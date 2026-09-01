@@ -14,6 +14,29 @@ def test_tray_display_config():
     else:
         raise AssertionError("invalid tray display should be rejected")
 
+    assert keyswitcher.DEFAULT_CONFIG["antigravity_tray_target"] == "both"
+    assert keyswitcher._coerce_config_value("antigravity_tray_target", "cli") == "cli"
+    assert keyswitcher._coerce_config_value("antigravity_tray_target", "IDE") == "ide"
+    assert keyswitcher._coerce_config_value("antigravity_tray_target", "all") == "both"
+    try:
+        keyswitcher._coerce_config_value("antigravity_tray_target", "invalid")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("invalid antigravity tray target should be rejected")
+
+    assert keyswitcher.DEFAULT_CONFIG["antigravity_tray_models"] == "both"
+    assert keyswitcher._coerce_config_value("antigravity_tray_models", "Gemini") == "gemini"
+    assert keyswitcher._coerce_config_value("antigravity_tray_models", "claude_gpt") == "claude_gpt"
+    assert keyswitcher._coerce_config_value("antigravity_tray_models", "claude") == "claude_gpt"
+    assert keyswitcher._coerce_config_value("antigravity_tray_display", "both") == "both"
+    try:
+        keyswitcher._coerce_config_value("antigravity_tray_models", "invalid")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("invalid antigravity tray models should be rejected")
+
 
 def test_confirmed_secondary_reset_replaces_cached_value():
     now = 1_000

@@ -90,6 +90,14 @@ public enum L10n {
     public static var trayDisplayBoth: String { "Codex + Antigravity" }
     public static var trayDisplayCodex: String { "Codex" }
     public static var trayDisplayAntigravity: String { "Antigravity" }
+    public static var antigravityTrayTargetMenu: String { isRu ? "Цель Antigravity в строке меню" : "Antigravity target in menu bar" }
+    public static var antigravityTrayTargetBoth: String { isRu ? "Agent / CLI + IDE" : "Agent / CLI + IDE" }
+    public static var antigravityTrayTargetCli: String { isRu ? "Только Agent App / CLI" : "Agent App / CLI only" }
+    public static var antigravityTrayTargetIde: String { isRu ? "Только IDE" : "IDE only" }
+    public static var antigravityTrayMenu: String { isRu ? "Лимиты Antigravity в строке меню" : "Antigravity menu bar limits" }
+    public static var antigravityTrayBoth: String { "Gemini + Claude / GPT" }
+    public static var antigravityTrayGemini: String { isRu ? "Только Gemini" : "Gemini only" }
+    public static var antigravityTrayClaudeGpt: String { isRu ? "Только Claude / GPT" : "Claude / GPT only" }
     public static var quit: String { isRu ? "Выйти" : "Quit" }
 
     // Account Card Status
