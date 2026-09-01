@@ -88,6 +88,47 @@ struct ConfigData: Codable, Sendable {
     var tray_display: String?
     var antigravity_tray_target: String?
     var antigravity_tray_models: String?
+    var tray_slots: [String]?
+}
+
+enum TraySlotItem: String, CaseIterable, Identifiable, Sendable {
+    case codex = "codex"
+    case agCli = "ag_cli"
+    case agIde = "ag_ide"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .codex: return L10n.codexSlotTitle
+        case .agCli: return L10n.agCliSlotTitle
+        case .agIde: return L10n.agIdeSlotTitle
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .codex: return L10n.codexSlotDesc
+        case .agCli: return L10n.agCliSlotDesc
+        case .agIde: return L10n.agIdeSlotDesc
+        }
+    }
+
+    var systemIcon: String {
+        switch self {
+        case .codex: return "circle.hexagongrid.fill"
+        case .agCli: return "terminal.fill"
+        case .agIde: return "chevron.left.forwardslash.chevron.right"
+        }
+    }
+
+    var iconColor: Color {
+        switch self {
+        case .codex: return .green
+        case .agCli: return .blue
+        case .agIde: return .purple
+        }
+    }
 }
 
 enum TrayDisplay: String, CaseIterable, Sendable {
@@ -331,6 +372,24 @@ final class AppState: ObservableObject {
     var antigravityTrayModels: AntigravityTrayModels {
         AntigravityTrayModels(rawValue: config?.antigravity_tray_models ?? "") ?? .both
     }
+    var traySlots: [TraySlotItem] {
+        if let rawSlots = config?.tray_slots {
+            return rawSlots.compactMap { TraySlotItem(rawValue: $0) }
+        }
+        var slots: [TraySlotItem] = []
+        if trayDisplay != .antigravity {
+            slots.append(.codex)
+        }
+        if trayDisplay != .codex {
+            if antigravityTrayTarget != .ide {
+                slots.append(.agCli)
+            }
+            if antigravityTrayTarget != .cli {
+                slots.append(.agIde)
+            }
+        }
+        return slots.isEmpty ? [.codex, .agCli, .agIde] : slots
+    }
 }
 
 // MARK: - Status controller (engine orchestration, serial per-kind state machine)
@@ -540,6 +599,28 @@ final class StatusController {
     func setAntigravityTrayModels(_ models: AntigravityTrayModels) {
         state.config?.antigravity_tray_models = models.rawValue
         engine.run(["config", "set", "antigravity_tray_models", models.rawValue], as: ConfigResponse.self) { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success(let response) where response.ok == true:
+                self.applyConfig(response.config)
+            case .success(let response):
+                self.state.lastErrorText = response.error ?? L10n.operationFailed
+            case .failure(let error):
+                self.state.lastErrorText = error.displayText
+            }
+        }
+    }
+
+    func setTraySlots(_ slots: [TraySlotItem]) {
+        let raw = slots.map(\.rawValue)
+        state.config?.tray_slots = raw
+        let jsonStr: String
+        if let data = try? JSONEncoder().encode(raw), let str = String(data: data, encoding: .utf8) {
+            jsonStr = str
+        } else {
+            jsonStr = "[\(raw.map { "\"\($0)\"" }.joined(separator: ","))]"
+        }
+        engine.run(["config", "set", "tray_slots", jsonStr], as: ConfigResponse.self) { [weak self] result in
             guard let self = self else { return }
             switch result {
             case .success(let response) where response.ok == true:
@@ -1234,6 +1315,591 @@ extension View {
     }
 }
 
+// MARK: - Menu Bar Customization Modal
+
+private struct TraySlotFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+struct TrayCustomizationModal: View {
+    @ObservedObject var state: AppState
+    let controller: StatusController
+    @ObservedObject var antigravityController: AntigravityController
+    @Binding var isPresented: Bool
+
+    @State private var draggedSlotID: String? = nil
+    @State private var dragOffset: CGFloat = 0
+    @State private var dropTargetID: String? = nil
+    @State private var dropTargetEdge: VerticalEdge? = nil
+    @State private var slotFrames: [String: CGRect] = [:]
+
+    private var activeSlots: [TraySlotItem] {
+        state.traySlots
+    }
+
+    private var availableSlots: [TraySlotItem] {
+        TraySlotItem.allCases.filter { !activeSlots.contains($0) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n.trayModalTitle)
+                        .font(.headline)
+                    Text(L10n.trayModalSubtitle)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button(action: { isPresented = false }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(L10n.done)
+            }
+
+            Divider()
+
+            // Live Preview Box
+            VStack(alignment: .leading, spacing: 6) {
+                Text(L10n.trayPreviewLabel)
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.secondary)
+
+                livePreviewBar
+            }
+
+            // Antigravity Model Toggles
+            HStack(spacing: 12) {
+                Text(L10n.modelSelectionSection)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+
+                HStack(spacing: 6) {
+                    let isGeminiOn = state.antigravityTrayModels != .claudeGpt
+                    let isClaudeOn = state.antigravityTrayModels != .gemini
+
+                    Button {
+                        toggleModel(gemini: !isGeminiOn, claude: isClaudeOn)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "sparkle")
+                                .font(.system(size: 10))
+                            Text(L10n.showGeminiLimits)
+                                .font(.caption2)
+                            if isGeminiOn {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 9, weight: .bold))
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(isGeminiOn ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(isGeminiOn ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        toggleModel(gemini: isGeminiOn, claude: !isClaudeOn)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: 10))
+                            Text(L10n.showClaudeLimits)
+                                .font(.caption2)
+                            if isClaudeOn {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 9, weight: .bold))
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(isClaudeOn ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.06))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(isClaudeOn ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.vertical, 2)
+
+            Divider()
+
+            // Active Slots Section
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(L10n.activeTraySlots)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    Text("(\(activeSlots.count))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+
+                if activeSlots.isEmpty {
+                    Text(L10n.emptyTrayHint)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .italic()
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 16)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4]))
+                                .foregroundColor(Color.secondary.opacity(0.3))
+                        )
+                } else {
+                    activeSlotsList
+                }
+            }
+
+            // Available Slots to Add
+            if !availableSlots.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(L10n.availableTrayEntities)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+
+                    VStack(spacing: 6) {
+                        ForEach(availableSlots) { slot in
+                            availableSlotRow(slot)
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            // Footer
+            HStack {
+                Button(L10n.resetToDefault) {
+                    controller.setTraySlots([.codex, .agCli, .agIde])
+                    controller.setAntigravityTrayModels(.both)
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+                Spacer()
+
+                Button(L10n.done) {
+                    isPresented = false
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+            }
+        }
+        .padding(18)
+        .frame(width: 520)
+    }
+
+    private var livePreviewBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                .foregroundColor(.accentColor)
+                .font(.system(size: 13))
+
+            if activeSlots.isEmpty {
+                Text(L10n.emptyTrayHint)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .italic()
+            } else {
+                ForEach(Array(activeSlots.enumerated()), id: \.element.id) { index, slot in
+                    if index > 0 {
+                        Text("|")
+                            .font(.caption2)
+                            .foregroundColor(.secondary.opacity(0.6))
+                    }
+                    previewSlotItem(slot)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func previewSlotItem(_ slot: TraySlotItem) -> some View {
+        switch slot {
+        case .codex:
+            let activeAccount = state.status?.accounts?.first(where: { $0.active == true })
+                ?? state.status?.accounts?.first(where: { $0.slot == state.status?.active_slot })
+            let name = shortAccountName(email: activeAccount?.email, slot: state.status?.active_slot)
+            let windows = menuUsageWindows(activeAccount?.usage)
+
+            HStack(spacing: 4) {
+                Text(name)
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                if let short = windows.short?.used_percent {
+                    let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
+                    Image(systemName: "clock")
+                        .font(.system(size: 9))
+                    Text("\(remaining)%")
+                        .font(.caption2)
+                }
+                if let weekly = windows.weekly?.used_percent {
+                    let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                    Image(systemName: "calendar")
+                        .font(.system(size: 9))
+                    Text("\(remaining)%")
+                        .font(.caption2)
+                }
+            }
+
+        case .agCli, .agIde:
+            let target = (slot == .agCli) ? "cli" : "ide"
+            let targetPrefix = (activeSlots.contains(.agCli) && activeSlots.contains(.agIde)) ? (target == "cli" ? "CLI: " : "IDE: ") : ""
+            let activeID = antigravityController.status?.active?[target]
+            let profile = antigravityController.status?.profiles?.first(where: { $0.id == activeID })
+                ?? antigravityController.status?.profiles?.first
+            let name = targetPrefix + shortAccountName(email: profile?.email, slot: nil)
+            let showGemini = state.antigravityTrayModels != .claudeGpt
+            let showClaude = state.antigravityTrayModels != .gemini
+
+            HStack(spacing: 4) {
+                Text(name)
+                    .font(.caption2)
+                    .fontWeight(.medium)
+
+                if let quota = profile?.quota {
+                    let gUsage = (quota.gemini?.ok == true && quota.gemini?.stale != true) ? quota.gemini : nil
+                    let tUsage = (quota.thirdParty?.ok == true && quota.thirdParty?.stale != true) ? quota.thirdParty : nil
+                    let gWindows = menuUsageWindows(gUsage)
+                    let tWindows = menuUsageWindows(tUsage)
+
+                    if showGemini {
+                        Image(systemName: "sparkle")
+                            .font(.system(size: 9))
+                        if let short = gWindows.short?.used_percent {
+                            let rem = Int(remainingLimitPercent(fromUsed: short).rounded())
+                            Text("\(rem)%").font(.caption2)
+                        } else if let weekly = gWindows.weekly?.used_percent {
+                            let rem = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                            Text("\(rem)%").font(.caption2)
+                        }
+                    }
+
+                    if showClaude {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 9))
+                        if let short = tWindows.short?.used_percent {
+                            let rem = Int(remainingLimitPercent(fromUsed: short).rounded())
+                            Text("\(rem)%").font(.caption2)
+                        } else if let weekly = tWindows.weekly?.used_percent {
+                            let rem = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                            Text("\(rem)%").font(.caption2)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var activeSlotsList: some View {
+        VStack(spacing: 6) {
+            ForEach(activeSlots) { slot in
+                activeSlotRow(slot)
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(
+                                key: TraySlotFramePreferenceKey.self,
+                                value: [slot.id: geometry.frame(in: .named("traySlotList"))]
+                            )
+                        }
+                    }
+                    .offset(y: draggedSlotID == slot.id ? dragOffset : 0)
+                    .scaleEffect(draggedSlotID == slot.id ? 1.015 : 1)
+                    .shadow(
+                        color: .black.opacity(draggedSlotID == slot.id ? 0.24 : 0),
+                        radius: draggedSlotID == slot.id ? 12 : 0,
+                        y: draggedSlotID == slot.id ? 6 : 0
+                    )
+                    .zIndex(draggedSlotID == slot.id ? 10 : 0)
+                    .overlay(alignment: dropIndicatorAlignment) {
+                        dropIndicator(for: slot.id)
+                    }
+                    .accessibilityAction(named: Text(L10n.moveUp)) {
+                        moveSlot(slot, by: -1)
+                    }
+                    .accessibilityAction(named: Text(L10n.moveDown)) {
+                        moveSlot(slot, by: 1)
+                    }
+            }
+        }
+        .coordinateSpace(name: "traySlotList")
+        .onPreferenceChange(TraySlotFramePreferenceKey.self) { frames in
+            if draggedSlotID == nil {
+                slotFrames = frames
+            }
+        }
+    }
+
+    private var dropIndicatorAlignment: Alignment {
+        dropTargetEdge == .bottom ? .bottom : .top
+    }
+
+    @ViewBuilder
+    private func dropIndicator(for slotID: String) -> some View {
+        if dropTargetID == slotID, let edge = dropTargetEdge {
+            Rectangle()
+                .fill(Color.accentColor)
+                .frame(height: 2)
+                .padding(.horizontal, 4)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: edge == .top ? .top : .bottom)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func activeSlotRow(_ slot: TraySlotItem) -> some View {
+        HStack(spacing: 10) {
+            // Drag handle
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(Color.primary.opacity(0.7))
+                .frame(width: 20, height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color.primary.opacity(0.08))
+                )
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 2, coordinateSpace: .named("traySlotList"))
+                        .onChanged { updateDrag($0, slotID: slot.id) }
+                        .onEnded { _ in finishDrag(slotID: slot.id) }
+                )
+
+            // Icon
+            Image(systemName: slot.systemIcon)
+                .font(.system(size: 14))
+                .foregroundColor(slot.iconColor)
+                .frame(width: 22)
+
+            // Titles
+            VStack(alignment: .leading, spacing: 1) {
+                Text(slot.title)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                Text(slot.description)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            // Move Up/Down Buttons
+            HStack(spacing: 2) {
+                Button {
+                    moveSlot(slot, by: -1)
+                } label: {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .disabled(activeSlots.first == slot)
+                .opacity(activeSlots.first == slot ? 0.3 : 1)
+
+                Button {
+                    moveSlot(slot, by: 1)
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .disabled(activeSlots.last == slot)
+                .opacity(activeSlots.last == slot ? 0.3 : 1)
+            }
+            .padding(.trailing, 4)
+
+            // Remove button
+            Button {
+                removeSlot(slot)
+            } label: {
+                Image(systemName: "minus.circle.fill")
+                    .font(.system(size: 15))
+                    .foregroundColor(.red.opacity(0.85))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(L10n.removeSlot)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private func availableSlotRow(_ slot: TraySlotItem) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: slot.systemIcon)
+                .font(.system(size: 14))
+                .foregroundColor(slot.iconColor)
+                .frame(width: 22)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(slot.title)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                Text(slot.description)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            Button {
+                addSlot(slot)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "plus.circle.fill")
+                    Text(L10n.addSlot)
+                        .font(.caption2)
+                }
+                .foregroundColor(.accentColor)
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.primary.opacity(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3]))
+                .foregroundColor(Color.primary.opacity(0.12))
+        )
+    }
+
+    private func addSlot(_ slot: TraySlotItem) {
+        var slots = activeSlots
+        if !slots.contains(slot) {
+            slots.append(slot)
+            controller.setTraySlots(slots)
+        }
+    }
+
+    private func removeSlot(_ slot: TraySlotItem) {
+        var slots = activeSlots
+        slots.removeAll { $0 == slot }
+        controller.setTraySlots(slots)
+    }
+
+    private func moveSlot(_ slot: TraySlotItem, by delta: Int) {
+        var slots = activeSlots
+        guard let idx = slots.firstIndex(of: slot) else { return }
+        let newIdx = idx + delta
+        guard newIdx >= 0, newIdx < slots.count else { return }
+        slots.swapAt(idx, newIdx)
+        controller.setTraySlots(slots)
+    }
+
+    private func toggleModel(gemini: Bool, claude: Bool) {
+        if gemini && claude {
+            controller.setAntigravityTrayModels(.both)
+        } else if gemini {
+            controller.setAntigravityTrayModels(.gemini)
+        } else if claude {
+            controller.setAntigravityTrayModels(.claudeGpt)
+        } else {
+            controller.setAntigravityTrayModels(.both)
+        }
+    }
+
+    private func updateDrag(_ value: DragGesture.Value, slotID: String) {
+        guard draggedSlotID == nil || draggedSlotID == slotID else { return }
+        draggedSlotID = slotID
+        dragOffset = value.translation.height
+
+        guard let currentFrame = slotFrames[slotID] else { return }
+        let currentMidY = currentFrame.midY + dragOffset
+        var nearestID: String? = nil
+        var nearestDistance: CGFloat = .infinity
+        var edge: VerticalEdge = .top
+
+        for (id, frame) in slotFrames where id != slotID {
+            let distance = abs(frame.midY - currentMidY)
+            if distance < nearestDistance {
+                nearestDistance = distance
+                nearestID = id
+                edge = currentMidY < frame.midY ? .top : .bottom
+            }
+        }
+
+        dropTargetID = nearestID
+        dropTargetEdge = edge
+    }
+
+    private func finishDrag(slotID: String) {
+        guard draggedSlotID == slotID else { return }
+        let targetID = dropTargetID
+        let targetEdge = dropTargetEdge
+
+        withAnimation(.easeOut(duration: 0.15)) {
+            draggedSlotID = nil
+            dragOffset = 0
+            dropTargetID = nil
+            dropTargetEdge = nil
+        }
+
+        guard let targetID, targetID != slotID else { return }
+        var slots = activeSlots
+        guard let sourceIndex = slots.firstIndex(where: { $0.id == slotID }),
+              let destIndex = slots.firstIndex(where: { $0.id == targetID }) else { return }
+
+        let item = slots.remove(at: sourceIndex)
+        var insertionIndex = destIndex
+        if targetEdge == .bottom {
+            insertionIndex = min(insertionIndex + 1, slots.count)
+        }
+        if sourceIndex < destIndex && targetEdge == .top {
+            insertionIndex = max(0, insertionIndex)
+        }
+        insertionIndex = min(max(0, insertionIndex), slots.count)
+        slots.insert(item, at: insertionIndex)
+
+        controller.setTraySlots(slots)
+    }
+}
+
 struct PanelView: View {
     @ObservedObject var state: AppState
     let controller: StatusController
@@ -1253,6 +1919,7 @@ struct PanelView: View {
     @State private var dropTargetSlot: Int? = nil
     @State private var dropTargetEdge: VerticalEdge? = nil
     @State private var accountFrames: [Int: CGRect] = [:]
+    @State private var isShowingTrayCustomization = false
     @State private var isFooterSettingsHovered = false
 
     private var refreshDisabled: Bool {
@@ -1273,6 +1940,14 @@ struct PanelView: View {
         }
         .padding(12)
         .frame(width: 580)
+        .sheet(isPresented: $isShowingTrayCustomization) {
+            TrayCustomizationModal(
+                state: state,
+                controller: controller,
+                antigravityController: antigravityController,
+                isPresented: $isShowingTrayCustomization
+            )
+        }
         .alert(L10n.deleteAccountTitle, isPresented: Binding(
             get: { slotToDelete != nil },
             set: { if !$0 { slotToDelete = nil } }
@@ -1329,55 +2004,12 @@ struct PanelView: View {
                         Text(L10n.languageMenu)
                     }
 
-                    Menu {
-                        ForEach(TrayDisplay.allCases, id: \.rawValue) { display in
-                            Button {
-                                controller.setTrayDisplay(display)
-                            } label: {
-                                HStack {
-                                    Text(display.title)
-                                    if state.trayDisplay == display {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        Text(L10n.trayDisplayMenu)
-                    }
+                    Divider()
 
-                    Menu {
-                        ForEach(AntigravityTrayTarget.allCases, id: \.rawValue) { targetOption in
-                            Button {
-                                controller.setAntigravityTrayTarget(targetOption)
-                            } label: {
-                                HStack {
-                                    Text(targetOption.title)
-                                    if state.antigravityTrayTarget == targetOption {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
+                    Button {
+                        isShowingTrayCustomization = true
                     } label: {
-                        Text(L10n.antigravityTrayTargetMenu)
-                    }
-
-                    Menu {
-                        ForEach(AntigravityTrayModels.allCases, id: \.rawValue) { modelOption in
-                            Button {
-                                controller.setAntigravityTrayModels(modelOption)
-                            } label: {
-                                HStack {
-                                    Text(modelOption.title)
-                                    if state.antigravityTrayModels == modelOption {
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        Text(L10n.antigravityTrayMenu)
+                        Label(L10n.customizeTrayMenu, systemImage: "slider.horizontal.3")
                     }
 
                     Divider()
@@ -1823,182 +2455,162 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
             ))
         }
 
-        let showCodex = state.trayDisplay != .antigravity
-        let showAntigravity = state.trayDisplay != .codex
+        let slots = state.traySlots
+        let showGemini = state.antigravityTrayModels != .claudeGpt
+        let showClaude = state.antigravityTrayModels != .gemini
 
-        if showCodex, state.engineMissing || state.statusFailed {
-            title.append(NSAttributedString(
-                string: "KS ",
-                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
-            ))
-            title.append(symbolText("exclamationmark.triangle", color: .systemOrange, font: font))
-        } else if showCodex, let status = state.status {
-            let activeAccount = status.accounts?.first(where: { $0.active == true })
-                ?? status.accounts?.first(where: { $0.slot == status.active_slot })
-            let accountName = shortAccountName(email: activeAccount?.email, slot: status.active_slot)
-
-            title.append(NSAttributedString(
-                string: accountName + " ",
-                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
-            ))
-
-            let allowed = activeAccount?.usage?.allowed != false
-            let windows = menuUsageWindows(activeAccount?.usage)
-            if let short = windows.short?.used_percent {
-                let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
-                appendWindow(symbol: "clock", remaining: remaining, allowed: allowed)
-            }
-            if let weekly = windows.weekly?.used_percent {
-                let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
-                if windows.short != nil {
-                    title.append(NSAttributedString(
-                        string: "   ",
-                        attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
-                    ))
-                }
-                appendWindow(symbol: "calendar", remaining: remaining, allowed: allowed)
-            }
-            if windows.short == nil && windows.weekly == nil {
+        for (index, slot) in slots.enumerated() {
+            if index > 0 {
                 title.append(NSAttributedString(
-                    string: "…",
+                    string: " | ",
                     attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
                 ))
             }
-        } else if showCodex {
-            title.append(NSAttributedString(
-                string: "KS",
-                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
-            ))
-        }
 
-        // Antigravity section
-        if showAntigravity,
-           let agStatus = antigravityController.status,
-           let profiles = agStatus.profiles,
-           !profiles.isEmpty {
-            let showGemini = state.antigravityTrayModels != .claudeGpt
-            let showClaude = state.antigravityTrayModels != .gemini
-            let targetPref = state.antigravityTrayTarget
-
-            let cliID = agStatus.active?["cli"]
-            let ideID = agStatus.active?["ide"]
-
-            let cliProfile = profiles.first(where: { $0.id == cliID })
-            let ideProfile = profiles.first(where: { $0.id == ideID })
-
-            var sectionsToRender: [(prefix: String?, profile: AntigravityProfile)] = []
-
-            switch targetPref {
-            case .cli:
-                if let p = cliProfile ?? profiles.first {
-                    sectionsToRender.append((nil, p))
-                }
-            case .ide:
-                if let p = ideProfile ?? profiles.first {
-                    sectionsToRender.append((nil, p))
-                }
-            case .both:
-                if let cli = cliProfile, let ide = ideProfile, cli.id != ide.id {
-                    sectionsToRender.append(("CLI: ", cli))
-                    sectionsToRender.append(("IDE: ", ide))
-                } else if let p = cliProfile ?? ideProfile ?? profiles.first {
-                    sectionsToRender.append((nil, p))
-                }
-            }
-
-            for (index, item) in sectionsToRender.enumerated() {
-                let profile = item.profile
-                let agName = (item.prefix ?? "") + shortAccountName(email: profile.email, slot: nil)
-
-                if showCodex || index > 0 {
+            switch slot {
+            case .codex:
+                if state.engineMissing || state.statusFailed {
                     title.append(NSAttributedString(
-                        string: " | ",
-                        attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                        string: "KS ",
+                        attributes: [.font: font, .foregroundColor: NSColor.labelColor]
                     ))
-                }
-                title.append(NSAttributedString(
-                    string: agName + " ",
-                    attributes: [.font: font, .foregroundColor: NSColor.labelColor]
-                ))
+                    title.append(symbolText("exclamationmark.triangle", color: .systemOrange, font: font))
+                } else if let status = state.status {
+                    let activeAccount = status.accounts?.first(where: { $0.active == true })
+                        ?? status.accounts?.first(where: { $0.slot == status.active_slot })
+                    let accountName = shortAccountName(email: activeAccount?.email, slot: status.active_slot)
 
-                let quota = profile.quota
-                let gUsage = (quota?.gemini?.ok == true && quota?.gemini?.stale != true) ? quota?.gemini : nil
-                let tUsage = (quota?.thirdParty?.ok == true && quota?.thirdParty?.stale != true) ? quota?.thirdParty : nil
-
-                let gWindows = menuUsageWindows(gUsage)
-                let tWindows = menuUsageWindows(tUsage)
-
-                var appendedAny = false
-
-                // Gemini (sparkle)
-                if showGemini && (gWindows.short != nil || gWindows.weekly != nil) {
-                    title.append(symbolText("sparkle", color: .secondaryLabelColor, font: font))
                     title.append(NSAttributedString(
-                        string: " ",
-                        attributes: [.font: font]
+                        string: accountName + " ",
+                        attributes: [.font: font, .foregroundColor: NSColor.labelColor]
                     ))
-                    let gAllowed = gUsage?.allowed != false
-                    if let short = gWindows.short?.used_percent {
+
+                    let allowed = activeAccount?.usage?.allowed != false
+                    let windows = menuUsageWindows(activeAccount?.usage)
+                    if let short = windows.short?.used_percent {
                         let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
-                        appendWindow(symbol: "clock", remaining: remaining, allowed: gAllowed)
+                        appendWindow(symbol: "clock", remaining: remaining, allowed: allowed)
                     }
-                    if let weekly = gWindows.weekly?.used_percent {
+                    if let weekly = windows.weekly?.used_percent {
                         let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
-                        if gWindows.short != nil {
+                        if windows.short != nil {
                             title.append(NSAttributedString(
-                                string: "  ",
+                                string: "   ",
                                 attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
                             ))
                         }
-                        appendWindow(symbol: "calendar", remaining: remaining, allowed: gAllowed)
+                        appendWindow(symbol: "calendar", remaining: remaining, allowed: allowed)
                     }
-                    appendedAny = true
-                }
-
-                // Claude / GPT (bolt.fill)
-                if showClaude && (tWindows.short != nil || tWindows.weekly != nil) {
-                    if appendedAny {
+                    if windows.short == nil && windows.weekly == nil {
                         title.append(NSAttributedString(
-                            string: "   ",
+                            string: "…",
                             attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
                         ))
                     }
-                    title.append(symbolText("bolt.fill", color: .secondaryLabelColor, font: font))
+                } else {
                     title.append(NSAttributedString(
-                        string: " ",
-                        attributes: [.font: font]
+                        string: "KS",
+                        attributes: [.font: font, .foregroundColor: NSColor.labelColor]
                     ))
-                    let tAllowed = tUsage?.allowed != false
-                    if let short = tWindows.short?.used_percent {
-                        let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
-                        appendWindow(symbol: "clock", remaining: remaining, allowed: tAllowed)
-                    }
-                    if let weekly = tWindows.weekly?.used_percent {
-                        let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
-                        if tWindows.short != nil {
+                }
+
+            case .agCli, .agIde:
+                let target = (slot == .agCli) ? "cli" : "ide"
+                let targetPrefix = (slots.contains(.agCli) && slots.contains(.agIde)) ? (target == "cli" ? "CLI: " : "IDE: ") : ""
+
+                if let agStatus = antigravityController.status,
+                   let profiles = agStatus.profiles,
+                   !profiles.isEmpty {
+                    let activeProfileID = agStatus.active?[target]
+                    let profile = profiles.first(where: { $0.id == activeProfileID }) ?? profiles.first
+
+                    if let profile = profile {
+                        let agName = targetPrefix + shortAccountName(email: profile.email, slot: nil)
+                        title.append(NSAttributedString(
+                            string: agName + " ",
+                            attributes: [.font: font, .foregroundColor: NSColor.labelColor]
+                        ))
+
+                        let quota = profile.quota
+                        let gUsage = (quota?.gemini?.ok == true && quota?.gemini?.stale != true) ? quota?.gemini : nil
+                        let tUsage = (quota?.thirdParty?.ok == true && quota?.thirdParty?.stale != true) ? quota?.thirdParty : nil
+
+                        let gWindows = menuUsageWindows(gUsage)
+                        let tWindows = menuUsageWindows(tUsage)
+
+                        var appendedAny = false
+
+                        // Gemini (sparkle)
+                        if showGemini && (gWindows.short != nil || gWindows.weekly != nil) {
+                            title.append(symbolText("sparkle", color: .secondaryLabelColor, font: font))
                             title.append(NSAttributedString(
-                                string: "  ",
+                                string: " ",
+                                attributes: [.font: font]
+                            ))
+                            let gAllowed = gUsage?.allowed != false
+                            if let short = gWindows.short?.used_percent {
+                                let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
+                                appendWindow(symbol: "clock", remaining: remaining, allowed: gAllowed)
+                            }
+                            if let weekly = gWindows.weekly?.used_percent {
+                                let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                                if gWindows.short != nil {
+                                    title.append(NSAttributedString(
+                                        string: "  ",
+                                        attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                                    ))
+                                }
+                                appendWindow(symbol: "calendar", remaining: remaining, allowed: gAllowed)
+                            }
+                            appendedAny = true
+                        }
+
+                        // Claude / GPT (bolt.fill)
+                        if showClaude && (tWindows.short != nil || tWindows.weekly != nil) {
+                            if appendedAny {
+                                title.append(NSAttributedString(
+                                    string: "   ",
+                                    attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                                ))
+                            }
+                            title.append(symbolText("bolt.fill", color: .secondaryLabelColor, font: font))
+                            title.append(NSAttributedString(
+                                string: " ",
+                                attributes: [.font: font]
+                            ))
+                            let tAllowed = tUsage?.allowed != false
+                            if let short = tWindows.short?.used_percent {
+                                let remaining = Int(remainingLimitPercent(fromUsed: short).rounded())
+                                appendWindow(symbol: "clock", remaining: remaining, allowed: tAllowed)
+                            }
+                            if let weekly = tWindows.weekly?.used_percent {
+                                let remaining = Int(remainingLimitPercent(fromUsed: weekly).rounded())
+                                if tWindows.short != nil {
+                                    title.append(NSAttributedString(
+                                        string: "  ",
+                                        attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                                    ))
+                                }
+                                appendWindow(symbol: "calendar", remaining: remaining, allowed: tAllowed)
+                            }
+                            appendedAny = true
+                        }
+
+                        if !appendedAny {
+                            title.append(NSAttributedString(
+                                string: "…",
                                 attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
                             ))
                         }
-                        appendWindow(symbol: "calendar", remaining: remaining, allowed: tAllowed)
                     }
-                    appendedAny = true
-                }
-
-                if !appendedAny {
+                } else {
                     title.append(NSAttributedString(
-                        string: "…",
-                        attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+                        string: target == "cli" ? "AG(CLI)" : "AG(IDE)",
+                        attributes: [.font: font, .foregroundColor: NSColor.labelColor]
                     ))
+                    title.append(symbolText("exclamationmark.triangle", color: .systemOrange, font: font))
                 }
             }
-        } else if showAntigravity && !showCodex {
-            title.append(NSAttributedString(
-                string: "AG",
-                attributes: [.font: font, .foregroundColor: NSColor.labelColor]
-            ))
-            title.append(symbolText("exclamationmark.triangle", color: .systemOrange, font: font))
         }
 
         button.attributedTitle = title

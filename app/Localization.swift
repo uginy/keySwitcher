@@ -86,15 +86,32 @@ public enum L10n {
     public static var settings: String { isRu ? "Настройки приложения" : "App settings" }
     public static var launchAtLogin: String { isRu ? "Запускать при входе" : "Launch at login" }
     public static var languageMenu: String { isRu ? "Язык" : "Language" }
-    public static var trayDisplayMenu: String { isRu ? "Показывать в строке меню" : "Show in menu bar" }
+    public static var customizeTrayMenu: String { isRu ? "Настройка строки меню…" : "Customize menu bar…" }
+    public static var trayModalTitle: String { isRu ? "Настройка строки меню" : "Menu Bar Customization" }
+    public static var trayModalSubtitle: String { isRu ? "Перетаскивайте слоты для изменения порядка в трее" : "Drag and drop slots to change their order in the menu bar" }
+    public static var trayPreviewLabel: String { isRu ? "Предпросмотр в строке меню" : "Menu bar preview" }
+    public static var activeTraySlots: String { isRu ? "Активные элементы в трее" : "Active menu bar items" }
+    public static var availableTrayEntities: String { isRu ? "Доступные элементы для добавления" : "Available items to add" }
+    public static var emptyTrayHint: String { isRu ? "Строка меню пуста — добавьте элементы ниже" : "Menu bar is empty — add items below" }
+    public static var codexSlotTitle: String { "OpenAI Codex" }
+    public static var codexSlotDesc: String { isRu ? "Активный аккаунт + лимиты 5ч и недели" : "Active account + 5h & weekly limits" }
+    public static var agCliSlotTitle: String { "Antigravity (Agent App / CLI)" }
+    public static var agCliSlotDesc: String { isRu ? "Активный аккаунт Agent / CLI + лимиты" : "Active Agent / CLI account + limits" }
+    public static var agIdeSlotTitle: String { "Antigravity (IDE)" }
+    public static var agIdeSlotDesc: String { isRu ? "Активный аккаунт IDE + лимиты" : "Active IDE account + limits" }
+    public static var addSlot: String { isRu ? "Добавить" : "Add" }
+    public static var removeSlot: String { isRu ? "Убрать из трея" : "Remove from menu bar" }
+    public static var done: String { isRu ? "Готово" : "Done" }
+    public static var resetToDefault: String { isRu ? "По умолчанию" : "Reset default" }
+    public static var showGeminiLimits: String { "Gemini" }
+    public static var showClaudeLimits: String { "Claude / GPT" }
+    public static var modelSelectionSection: String { isRu ? "Модели Antigravity в трее:" : "Antigravity models in menu bar:" }
     public static var trayDisplayBoth: String { "Codex + Antigravity" }
     public static var trayDisplayCodex: String { "Codex" }
     public static var trayDisplayAntigravity: String { "Antigravity" }
-    public static var antigravityTrayTargetMenu: String { isRu ? "Цель Antigravity в строке меню" : "Antigravity target in menu bar" }
     public static var antigravityTrayTargetBoth: String { isRu ? "Agent / CLI + IDE" : "Agent / CLI + IDE" }
     public static var antigravityTrayTargetCli: String { isRu ? "Только Agent App / CLI" : "Agent App / CLI only" }
     public static var antigravityTrayTargetIde: String { isRu ? "Только IDE" : "IDE only" }
-    public static var antigravityTrayMenu: String { isRu ? "Лимиты Antigravity в строке меню" : "Antigravity menu bar limits" }
     public static var antigravityTrayBoth: String { "Gemini + Claude / GPT" }
     public static var antigravityTrayGemini: String { isRu ? "Только Gemini" : "Gemini only" }
     public static var antigravityTrayClaudeGpt: String { isRu ? "Только Claude / GPT" : "Claude / GPT only" }

@@ -77,6 +77,7 @@ DEFAULT_CONFIG = {
     "tray_display": "both",
     "antigravity_tray_target": "both",
     "antigravity_tray_models": "both",
+    "tray_slots": ["codex", "ag_cli", "ag_ide"],
 }
 DEFAULT_STATE = {"cooldown_until": 0, "refresh_failures": {}}
 
@@ -963,6 +964,21 @@ def _coerce_config_value(key, value):
         if lowered in ("claude_gpt", "claude-gpt", "claude", "gpt", "third_party", "thirdparty", "3p"):
             return "claude_gpt"
         raise ValueError("%s expects both/gemini/claude_gpt" % key)
+    if key == "tray_slots":
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    value = parsed
+                else:
+                    value = [s.strip() for s in value.split(",") if s.strip()]
+            except Exception:
+                value = [s.strip() for s in value.split(",") if s.strip()]
+        if isinstance(value, list):
+            valid = {"codex", "ag_cli", "ag_ide"}
+            filtered = [str(x).strip().lower() for x in value if str(x).strip().lower() in valid]
+            return list(dict.fromkeys(filtered))
+        raise ValueError("%s expects a list of slot IDs" % key)
     if key == "client_id":
         return str(value)
     raise ValueError("unknown config key: %s" % key)
