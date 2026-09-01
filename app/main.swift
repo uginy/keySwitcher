@@ -1472,8 +1472,8 @@ struct TrayCustomizationModal: View {
                 }
             }
         }
-        .padding(18)
-        .frame(width: 520)
+        .padding(20)
+        .frame(width: 780)
     }
 
     private var livePreviewBar: some View {
@@ -1926,7 +1926,7 @@ final class TraySettingsWindowController: NSObject, NSWindowDelegate {
 
         let hostingController = NSHostingController(rootView: contentView)
         let newWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 500),
+            contentRect: NSRect(x: 0, y: 0, width: 780, height: 530),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
