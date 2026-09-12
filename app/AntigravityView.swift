@@ -438,6 +438,10 @@ struct AntigravityPanelView: View {
             }
         }
         .coordinateSpace(name: "antigravityAccountList")
+        .animation(
+            .spring(response: 0.3, dampingFraction: 0.82),
+            value: "\(controller.status?.active?["cli"] ?? ""):\(controller.status?.active?["ide"] ?? "")"
+        )
         .onPreferenceChange(AntigravityFramePreferenceKey.self) { frames in
             if draggedProfileID == nil {
                 profileFrames = frames
@@ -461,18 +465,37 @@ struct AntigravityPanelView: View {
         }
     }
 
+    private func isProfileActive(_ profile: AntigravityProfile) -> Bool {
+        controller.status?.active?["cli"] == profile.id || controller.status?.active?["ide"] == profile.id
+    }
+
+    private func isProfileFullyActive(_ profile: AntigravityProfile) -> Bool {
+        controller.status?.active?["cli"] == profile.id && controller.status?.active?["ide"] == profile.id
+    }
+
     private func orderedProfiles(_ profiles: [AntigravityProfile]) -> [AntigravityProfile] {
         let currentOrder = controller.order["cli"] ?? []
-        guard !currentOrder.isEmpty else { return profiles }
-        var map = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
-        var ordered: [AntigravityProfile] = []
-        for id in currentOrder {
-            if let p = map.removeValue(forKey: id) {
-                ordered.append(p)
+        let baseList: [AntigravityProfile]
+        if currentOrder.isEmpty {
+            baseList = profiles
+        } else {
+            var map = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
+            var ordered: [AntigravityProfile] = []
+            for id in currentOrder {
+                if let p = map.removeValue(forKey: id) {
+                    ordered.append(p)
+                }
             }
+            ordered.append(contentsOf: map.values)
+            baseList = ordered
         }
-        ordered.append(contentsOf: map.values)
-        return ordered
+
+        // Active accounts (highlighted with green border) are always placed at the top of the list.
+        // Fully active (both CLI & IDE) first, then partially active (CLI or IDE), then inactive.
+        let fullyActive = baseList.filter { isProfileFullyActive($0) }
+        let partiallyActive = baseList.filter { isProfileActive($0) && !isProfileFullyActive($0) }
+        let inactive = baseList.filter { !isProfileActive($0) }
+        return fullyActive + partiallyActive + inactive
     }
 
     private func updateDrag(
@@ -531,7 +554,17 @@ struct AntigravityPanelView: View {
         insertionIndex = min(max(0, insertionIndex), ids.count)
         ids.insert(profileID, at: insertionIndex)
 
-        controller.reorder(profileIDs: ids, target: "all")
+        // Ensure active profiles remain at the top
+        let fullyActiveIDs = Set(profiles.filter { isProfileFullyActive($0) }.map(\.id))
+        let partiallyActiveIDs = Set(profiles.filter { isProfileActive($0) && !isProfileFullyActive($0) }.map(\.id))
+        let inactiveIDs = Set(profiles.filter { !isProfileActive($0) }.map(\.id))
+
+        let orderedFully = ids.filter { fullyActiveIDs.contains($0) }
+        let orderedPartially = ids.filter { partiallyActiveIDs.contains($0) }
+        let orderedInactive = ids.filter { inactiveIDs.contains($0) }
+        let finalIDs = orderedFully + orderedPartially + orderedInactive
+
+        controller.reorder(profileIDs: finalIDs, target: "all")
     }
 
     private func moveProfile(_ profileID: String, by delta: Int, profiles: [AntigravityProfile]) {
@@ -540,7 +573,17 @@ struct AntigravityPanelView: View {
         let newIndex = index + delta
         guard newIndex >= 0, newIndex < ids.count else { return }
         ids.swapAt(index, newIndex)
-        controller.reorder(profileIDs: ids, target: "all")
+
+        let fullyActiveIDs = Set(profiles.filter { isProfileFullyActive($0) }.map(\.id))
+        let partiallyActiveIDs = Set(profiles.filter { isProfileActive($0) && !isProfileFullyActive($0) }.map(\.id))
+        let inactiveIDs = Set(profiles.filter { !isProfileActive($0) }.map(\.id))
+
+        let orderedFully = ids.filter { fullyActiveIDs.contains($0) }
+        let orderedPartially = ids.filter { partiallyActiveIDs.contains($0) }
+        let orderedInactive = ids.filter { inactiveIDs.contains($0) }
+        let finalIDs = orderedFully + orderedPartially + orderedInactive
+
+        controller.reorder(profileIDs: finalIDs, target: "all")
     }
 }
 

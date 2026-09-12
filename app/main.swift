@@ -2073,8 +2073,12 @@ struct PanelView: View {
             addAccountProgress
         }
         .coordinateSpace(name: "accountList")
+        .animation(
+            .spring(response: 0.3, dampingFraction: 0.82),
+            value: accounts.first(where: { $0.active == true })?.slot
+        )
         .onAppear { syncAccountOrder(with: accounts) }
-        .onChange(of: accounts.map(\.slot)) { _ in
+        .onChange(of: accounts.map { "\($0.slot):\($0.active == true)" }) { _ in
             syncAccountOrder(with: accounts)
         }
         .onPreferenceChange(AccountFramePreferenceKey.self) { frames in
@@ -2117,7 +2121,11 @@ struct PanelView: View {
     private func normalizedAccountOrder(for accounts: [AccountInfo]) -> [Int] {
         let availableSlots = Set(accounts.map(\.slot))
         let savedSlots = accountOrder.filter(availableSlots.contains)
-        return savedSlots + accounts.map(\.slot).filter { !savedSlots.contains($0) }
+        let allSlots = savedSlots + accounts.map(\.slot).filter { !savedSlots.contains($0) }
+        let activeSet = Set(accounts.filter { $0.active == true }.map(\.slot))
+        let activeSlots = allSlots.filter { activeSet.contains($0) }
+        let inactiveSlots = allSlots.filter { !activeSet.contains($0) }
+        return activeSlots + inactiveSlots
     }
 
     private func syncAccountOrder(with accounts: [AccountInfo]) {
@@ -2197,8 +2205,14 @@ struct PanelView: View {
         insertionIndex = min(max(0, insertionIndex), updatedOrder.count)
         updatedOrder.insert(slot, at: insertionIndex)
 
-        accountOrder = updatedOrder
-        saveAccountOrder(updatedOrder)
+        // Ensure active accounts remain pinned at the top
+        let activeSet = Set(accounts.filter { $0.active == true }.map(\.slot))
+        let activeSlots = updatedOrder.filter { activeSet.contains($0) }
+        let inactiveSlots = updatedOrder.filter { !activeSet.contains($0) }
+        let finalOrder = activeSlots + inactiveSlots
+
+        accountOrder = finalOrder
+        saveAccountOrder(finalOrder)
         NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
         NSCursor.openHand.set()
     }
@@ -2209,10 +2223,16 @@ struct PanelView: View {
         let targetIndex = currentIndex + offset
         guard updatedOrder.indices.contains(targetIndex) else { return }
         updatedOrder.swapAt(currentIndex, targetIndex)
+
+        let activeSet = Set(accounts.filter { $0.active == true }.map(\.slot))
+        let activeSlots = updatedOrder.filter { activeSet.contains($0) }
+        let inactiveSlots = updatedOrder.filter { !activeSet.contains($0) }
+        let finalOrder = activeSlots + inactiveSlots
+
         withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
-            accountOrder = updatedOrder
+            accountOrder = finalOrder
         }
-        saveAccountOrder(updatedOrder)
+        saveAccountOrder(finalOrder)
     }
 
     private func saveAccountOrder(_ order: [Int]) {

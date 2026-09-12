@@ -520,6 +520,7 @@ class Dashboard(tk.Toplevel):
                 tk.Label(inner, text=L.t("No saved accounts yet", "Сохранённых аккаунтов пока нет"),
                          fg=FG_DIM, bg=BG).pack(anchor="w")
                 return
+            accounts = sorted(accounts, key=lambda a: 0 if a.get("active") else 1)
             for acc in accounts:
                 active = bool(acc.get("active"))
                 card = self._card(inner, active)
@@ -584,6 +585,16 @@ class Dashboard(tk.Toplevel):
                          fg=FG_DIM, bg=BG, font=("Segoe UI", 8)).pack(anchor="w")
                 return
             active = status.get("active") or {}
+            def _profile_rank(p):
+                pid = p.get("id")
+                is_cli = active.get("cli") == pid
+                is_ide = active.get("ide") == pid
+                if is_cli and is_ide:
+                    return 0
+                if is_cli or is_ide:
+                    return 1
+                return 2
+            profiles = sorted(profiles, key=_profile_rank)
             for profile in profiles:
                 pid = profile.get("id")
                 email = profile.get("email") or pid
