@@ -373,6 +373,7 @@ final class AppState: ObservableObject {
     @Published var autoswitchEnabled = false   // opt-in; ON drives the reactive daemon
     @Published var daemonRunning = false        // tracked internally; ON mirrors autoswitch
     @Published var loginItemEnabled = false
+    @Published var maxAvailableHeight: CGFloat = 700
 
     var notificationsEnabled: Bool { config?.notifications ?? true }
     var trayDisplay: TrayDisplay { TrayDisplay(rawValue: config?.tray_display ?? "") ?? .both }
@@ -942,42 +943,9 @@ struct UsageBarRow: View {
         Int(remainingPercent.rounded())
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text(label)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .frame(width: 44, alignment: .leading)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                GeometryReader { geometry in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.primary.opacity(0.10))
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(barColor)
-                            .frame(width: max(0, geometry.size.width * CGFloat(usedPercent) / 100))
-                    }
-                }
-                .frame(height: 8)
-                Text(percentText)
-                    .font(.caption)
-                    .monospacedDigit()
-                    .frame(width: 34, alignment: .trailing)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-            if !resetText.isEmpty {
-                Text(resetText)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                    .padding(.leading, 50)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-        }
-    }
+    @State private var isHovered = false
+    @State private var showTooltip = false
+    @State private var hoverTask: Task<Void, Never>?
 
     private var resetText: String {
         var text = ""
@@ -986,6 +954,79 @@ struct UsageBarRow: View {
             text = "\(formatResetInterval(secondsFromNow: remaining)) (\(formatResetClock(timestamp: resetAt)))"
         }
         return text
+    }
+
+    private var tooltipText: String {
+        let base = "\(label): \(percentText)"
+        if !resetText.isEmpty {
+            return "\(base) • \(resetText)"
+        }
+        return base
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(width: 44, alignment: .leading)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.primary.opacity(0.10))
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(barColor)
+                        .frame(width: max(0, geometry.size.width * CGFloat(usedPercent) / 100))
+                }
+            }
+            .frame(height: 8)
+            Text(percentText)
+                .font(.caption)
+                .monospacedDigit()
+                .frame(width: 34, alignment: .trailing)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            hoverTask?.cancel()
+            isHovered = hovering
+            if hovering && !tooltipText.isEmpty {
+                hoverTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 120_000_000)
+                    if !Task.isCancelled && isHovered {
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            showTooltip = true
+                        }
+                    }
+                }
+            } else {
+                withAnimation(.easeOut(duration: 0.08)) {
+                    showTooltip = false
+                }
+            }
+        }
+        .overlay(alignment: .top) {
+            if showTooltip && !tooltipText.isEmpty {
+                Text(tooltipText)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.primary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.primary.opacity(0.15), lineWidth: 0.5)
+                    )
+                    .shadow(color: .black.opacity(0.22), radius: 5, x: 0, y: 2)
+                    .offset(y: -26)
+                    .allowsHitTesting(false)
+                    .fixedSize()
+            }
+        }
+        .zIndex(isHovered ? 100 : 1)
     }
 }
 
@@ -1812,19 +1853,35 @@ struct PanelView: View {
         state.isLoading || state.isSwitching || refreshCooldown
     }
 
+    private var maxScrollHeight: CGFloat {
+        if state.maxAvailableHeight > 0 {
+            return state.maxAvailableHeight
+        }
+        let screen = AppDelegate.shared?.activeScreen ?? NSScreen.main
+        let visibleHeight = screen?.visibleFrame.height ?? 800
+        return max(300, visibleHeight - 70)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            codexPanel
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 12) {
+                    codexPanel
 
-            Divider()
+                    Divider()
 
-            AntigravityPanelView(controller: antigravityController)
+                    AntigravityPanelView(controller: antigravityController)
+                }
+                .padding(12)
+            }
+            .frame(maxHeight: maxScrollHeight)
 
             Divider()
 
             footerView
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
         }
-        .padding(12)
         .frame(width: 580)
         .alert(L10n.deleteAccountTitle, isPresented: Binding(
             get: { slotToDelete != nil },
@@ -1978,18 +2035,9 @@ struct PanelView: View {
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.vertical, 12)
         } else if let accounts = state.status?.accounts, !accounts.isEmpty {
-            if accounts.count > 3 {
-                ScrollView {
-                    codexAccountsList(accounts)
-                        .padding(.horizontal, 2)
-                        .padding(.vertical, 2)
-                }
-                .frame(height: 280)
-            } else {
-                codexAccountsList(accounts)
-                    .padding(.horizontal, 2)
-                    .padding(.vertical, 2)
-            }
+            codexAccountsList(accounts)
+                .padding(.horizontal, 2)
+                .padding(.vertical, 2)
         } else if state.isLoading {
             Text(L10n.loading)
                 .foregroundColor(.secondary)
@@ -2279,6 +2327,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
         }
 
         setupStatusItem()
+        if let button = statusItem?.button {
+            updateMaxAvailableHeight(for: button)
+        }
         setupPopover(controller: controller)
         subscribeToState()
 
@@ -2625,8 +2676,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, @pr
         }
     }
 
+    var activeScreen: NSScreen? {
+        statusItem?.button?.window?.screen
+            ?? NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+    }
+
+    private func updateMaxAvailableHeight(for button: NSStatusBarButton) {
+        let screen = button.window?.screen
+            ?? NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        guard let screen else { return }
+        let visibleHeight = screen.visibleFrame.height
+        let dockMargin: CGFloat = 24
+        let footerChromeHeight: CGFloat = 46
+        state.maxAvailableHeight = max(300, visibleHeight - dockMargin - footerChromeHeight)
+    }
+
     private func showPopover(_ sender: Any?) {
         guard let button = statusItem?.button else { return }
+        updateMaxAvailableHeight(for: button)
         controller?.refreshIfNeeded(minInterval: 15, silent: true)
         antigravityController.refreshIfNeeded(minInterval: 15, silent: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)

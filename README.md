@@ -22,7 +22,7 @@
 
 - **Single-Click Instant Switching**:
   - **OpenAI Codex**: Swaps token slots, safely persists current token state, performs a graceful restart, and automatically reopens your active conversation thread (`codex://threads/<id>`).
-  - **Google Antigravity**: Simultaneously synchronizes authentication across both **CLI** (macOS Keychain) and **IDE** (SQLite storage) with a single action, refreshing stale CLI access tokens before switching.
+  - **Google Antigravity**: Simultaneously synchronizes authentication across both **CLI** (macOS Keychain) and **IDE** (SQLite storage) with a single action, refreshing stale CLI access tokens before switching without triggering repetitive Keychain authorization dialogs.
 
 - **Live Menu Bar Quota Monitor & Visual Customizer**:
   - Real-time remaining percentage and color-coded status badges directly in the macOS menu bar using native SF Symbols.
@@ -30,9 +30,12 @@
   - **Antigravity**: Independent breakdowns for **Gemini** (`sparkle`) and **Claude / GPT** (`bolt`) quotas.
   - **Interactive Drag-and-Drop Customizer**: Dedicated settings window to reorder, add, or remove menu bar slots with granular control over **OpenAI Codex**, **Antigravity CLI (Gemini)**, **Antigravity CLI (Claude / GPT)**, **Antigravity IDE (Gemini)**, and **Antigravity IDE (Claude / GPT)**.
 
-- **Unified Dual Dashboard**:
+- **Unified Dual Dashboard with Dynamic Multi-Display Sizing**:
   - Compact side-by-side view showing both Codex and Antigravity accounts simultaneously without tab toggling.
-  - Displays plan badges (`Plus`, `Pro`, `Ultra`), visual usage bars, and exact reset countdown timers (e.g. `refresh in 1h 40m (23:54)`).
+  - **Dynamic Height Scaling**: Popover automatically adapts its height to the active display (5K, 1440p, or laptop screen), staying comfortably above the macOS Dock with safe margins.
+  - **Content-Aware Geometry**: Stays tight and compact with few accounts, and seamlessly expands with unified vertical scrolling when managing many accounts.
+  - **Ultra-Compact Cards & Fast Hover Tooltips**: Reset countdowns and timestamps (`5h: 85% • resets in 2h 50m (18:26)`) are moved into lightweight, frosted-glass tooltips that appear instantly on hover (120ms delay), saving vertical space and keeping cards ultra-clean.
+  - Displays plan badges (`Plus`, `Pro`, `Ultra`) and color-coded usage progress bars.
 
 - **Local & Privacy-Focused**:
   - Zero telemetry, zero external tracking servers.

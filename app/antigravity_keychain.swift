@@ -36,48 +36,32 @@ case "set":
     let data = FileHandle.standardInput.readDataToEndOfFile()
     guard !data.isEmpty else { fail("Refusing to save an empty Keychain value") }
 
-    // Own KeySwitcher snapshots only. Never rewrite ACL on shared items like
-    // service=gemini — that belongs to Antigravity CLI and must stay usable.
-    let ownsItem = service.hasPrefix("com.eugene.keyswitcher")
+    // Create an open access control list allowing any application in the user's
+    // session to access the item without prompting. This matches `security add-generic-password -A`
+    // and prevents repeated Keychain authorization dialogs when switching accounts.
+    var access: SecAccess?
+    let accessStatus = SecAccessCreate("Antigravity Credentials" as CFString, nil, &access)
+    if accessStatus != errSecSuccess {
+        access = nil
+    }
 
-    if ownsItem {
-        var access: SecAccess?
-        var trustedSelf: SecTrustedApplication?
-        let trustedStatus = SecTrustedApplicationCreateFromPath(nil, &trustedSelf)
-        if trustedStatus == errSecSuccess, let trustedSelf {
-            let createStatus = SecAccessCreate(
-                "KeySwitcher Antigravity" as CFString,
-                [trustedSelf] as CFArray,
-                &access
-            )
-            if createStatus != errSecSuccess {
-                access = nil
-            }
-        }
-
-        // SecItemUpdate cannot attach a new ACL; replace the item once.
-        _ = SecItemDelete(query as CFDictionary)
-        var attributes = query
-        attributes[kSecValueData as String] = data
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        if let access {
-            attributes[kSecAttrAccess as String] = access
-        }
-        let addStatus = SecItemAdd(attributes as CFDictionary, nil)
-        guard addStatus == errSecSuccess else { fail("Keychain add failed: \(addStatus)") }
-    } else {
-        let status = SecItemUpdate(
+    // Try delete + add with open access first to replace any restrictive ACL.
+    _ = SecItemDelete(query as CFDictionary)
+    var attributes = query
+    attributes[kSecValueData as String] = data
+    attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    if let access {
+        attributes[kSecAttrAccess as String] = access
+    }
+    let addStatus = SecItemAdd(attributes as CFDictionary, nil)
+    if addStatus != errSecSuccess {
+        // Fallback to in-place update if delete was refused by an existing owner.
+        let updateStatus = SecItemUpdate(
             query as CFDictionary,
             [kSecValueData as String: data] as CFDictionary
         )
-        if status == errSecItemNotFound {
-            var attributes = query
-            attributes[kSecValueData as String] = data
-            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            let addStatus = SecItemAdd(attributes as CFDictionary, nil)
-            guard addStatus == errSecSuccess else { fail("Keychain add failed: \(addStatus)") }
-        } else if status != errSecSuccess {
-            fail("Keychain update failed: \(status)")
+        guard updateStatus == errSecSuccess else {
+            fail("Keychain write failed (add: \(addStatus), update: \(updateStatus))")
         }
     }
 

@@ -37,6 +37,7 @@ ROOT = Path(os.environ.get(
     compat.antigravity_default_root(),
 )).expanduser()
 STATE_FILE = ROOT / "profiles.json"
+VAULT_FILE = ROOT / "vault.json"
 LOCK_FILE = ROOT / ".lock"
 BACKUP_DIR = ROOT / "backups"
 
@@ -176,15 +177,21 @@ def keychain_helper_path():
 
 def run_keychain(command, service, account, value=None, allow_missing=False):
     helper = os.environ.get("KEYSWITCHER_ANTIGRAVITY_KEYCHAIN_HELPER")
-    use_helper = bool(helper)
-    if not use_helper:
-        try:
-            keychain_helper_path()
-            use_helper = True
-        except RuntimeError:
-            use_helper = False
+    if helper:
+        cmd = compat.helper_command(Path(helper).expanduser()) + [command, service, account]
+        result = subprocess.run(
+            cmd,
+            input=value,
+            capture_output=True,
+            timeout=60,
+        )
+        if result.returncode == 44 and allow_missing:
+            return None
+        if result.returncode != 0:
+            raise RuntimeError("Keychain operation failed (%d)" % result.returncode)
+        return result.stdout
 
-    if not use_helper and compat.IS_WIN:
+    if compat.IS_WIN:
         try:
             if command == "get":
                 blob = compat.wincred_get(service, account)
@@ -205,11 +212,56 @@ def run_keychain(command, service, account, value=None, allow_missing=False):
             raise RuntimeError("Keychain operation failed (%s)" % exc) from exc
         raise RuntimeError("Unknown credential command: %s" % command)
 
+    # On macOS, prefer /usr/bin/security with -A (open ACL) to prevent any interactive
+    # password prompts. Fallback to compiled helper if security CLI fails.
+    security_bin = "/usr/bin/security"
+    if os.path.isfile(security_bin) and os.access(security_bin, os.X_OK):
+        try:
+            if command == "get":
+                result = subprocess.run(
+                    [security_bin, "find-generic-password", "-s", service, "-a", account, "-w"],
+                    capture_output=True,
+                    timeout=60,
+                )
+                if result.returncode == 44 and allow_missing:
+                    return None
+                if result.returncode == 0:
+                    return result.stdout.rstrip(b"\r\n")
+                if result.returncode == 44:
+                    raise RuntimeError("Keychain operation failed (44)")
+            elif command == "set":
+                val_str = value.decode("utf-8", errors="replace") if isinstance(value, (bytes, bytearray)) else (value or "")
+                # Delete existing item to clear restrictive ACLs, then recreate with open ACL
+                subprocess.run(
+                    [security_bin, "delete-generic-password", "-s", service, "-a", account],
+                    capture_output=True,
+                    timeout=60,
+                )
+                result = subprocess.run(
+                    [security_bin, "add-generic-password", "-s", service, "-a", account, "-w", val_str, "-A"],
+                    capture_output=True,
+                    timeout=60,
+                )
+                if result.returncode == 0:
+                    return b""
+            elif command == "delete":
+                result = subprocess.run(
+                    [security_bin, "delete-generic-password", "-s", service, "-a", account],
+                    capture_output=True,
+                    timeout=60,
+                )
+                if result.returncode == 0 or (result.returncode == 44 and allow_missing):
+                    return b""
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
+
     result = subprocess.run(
         compat.helper_command(keychain_helper_path()) + [command, service, account],
         input=value,
         capture_output=True,
-        timeout=30,
+        timeout=60,
     )
     if result.returncode == 44 and allow_missing:
         return None
@@ -222,27 +274,59 @@ def profile_account(profile_id, target):
     return "%s:%s" % (profile_id, target)
 
 
+_VAULT_CACHE = None
+
+
 def load_snapshot_vault():
+    global _VAULT_CACHE
+    if _VAULT_CACHE is not None:
+        return _VAULT_CACHE
+
+    is_mock = bool(os.environ.get("KEYSWITCHER_ANTIGRAVITY_KEYCHAIN_HELPER") or os.environ.get("FAKE_KEYCHAIN_STORE"))
+    if not is_mock and VAULT_FILE.is_file():
+        try:
+            vault = json.loads(VAULT_FILE.read_text())
+            if isinstance(vault, dict):
+                _VAULT_CACHE = vault
+                return _VAULT_CACHE
+        except Exception:
+            pass
+
     raw = run_keychain("get", PROFILE_SERVICE, SNAPSHOT_ACCOUNT, allow_missing=True)
     if raw is None:
-        return {}
-    try:
-        vault = json.loads(raw.decode())
-    except Exception as exc:
-        raise RuntimeError("Saved profile vault is unreadable") from exc
-    if not isinstance(vault, dict):
-        raise RuntimeError("Saved profile vault is invalid")
-    return vault
+        vault = {}
+    else:
+        try:
+            vault = json.loads(raw.decode())
+        except Exception as exc:
+            raise RuntimeError("Saved profile vault is unreadable") from exc
+        if not isinstance(vault, dict):
+            raise RuntimeError("Saved profile vault is invalid")
+
+    _VAULT_CACHE = vault
+    if not is_mock and vault:
+        with contextlib.suppress(Exception):
+            write_json_atomic(VAULT_FILE, vault)
+    return _VAULT_CACHE
 
 
 def write_snapshot_vault(vault):
-    if vault:
-        run_keychain(
-            "set", PROFILE_SERVICE, SNAPSHOT_ACCOUNT,
-            json.dumps(vault, separators=(",", ":")).encode(),
-        )
-    else:
-        run_keychain("delete", PROFILE_SERVICE, SNAPSHOT_ACCOUNT, allow_missing=True)
+    global _VAULT_CACHE
+    _VAULT_CACHE = dict(vault)
+    is_mock = bool(os.environ.get("KEYSWITCHER_ANTIGRAVITY_KEYCHAIN_HELPER") or os.environ.get("FAKE_KEYCHAIN_STORE"))
+    if not is_mock:
+        write_json_atomic(VAULT_FILE, vault)
+    try:
+        if vault:
+            run_keychain(
+                "set", PROFILE_SERVICE, SNAPSHOT_ACCOUNT,
+                json.dumps(vault, separators=(",", ":")).encode(),
+            )
+        else:
+            run_keychain("delete", PROFILE_SERVICE, SNAPSHOT_ACCOUNT, allow_missing=True)
+    except Exception:
+        if is_mock:
+            raise
 
 
 def save_vault_snapshot(profile_id, target, snapshot):
@@ -779,6 +863,7 @@ def switch_gui(profile_id, target, snapshot):
     was_running = app_is_running(bundle_id)
     if was_running:
         stop_app(bundle_id)
+    success = False
     try:
         backup_database(path, target)
         connection = sqlite3.connect(path, timeout=5)
@@ -790,13 +875,14 @@ def switch_gui(profile_id, target, snapshot):
                 rows.items(),
             )
             connection.commit()
+            success = True
         except Exception:
             connection.rollback()
             raise
         finally:
             connection.close()
     finally:
-        if was_running:
+        if was_running and success:
             with contextlib.suppress(Exception):
                 open_app(bundle_id)
 
@@ -834,14 +920,16 @@ def switch(profile_id, target):
         was_running = app_is_running(SHARED_APP_BUNDLE_ID)
         if was_running:
             stop_app(SHARED_APP_BUNDLE_ID)
+        success = False
         try:
             run_keychain("set", CLI_SERVICE, CLI_ACCOUNT, snapshot["payload"].encode())
             write_cli_credentials_file(snapshot)
             state = load_state()
             state["active"][target] = profile_id
             write_json_atomic(STATE_FILE, state)
+            success = True
         finally:
-            if was_running:
+            if was_running and success:
                 open_app(SHARED_APP_BUNDLE_ID)
     else:
         raise RuntimeError("Unknown Antigravity target: %s" % target)

@@ -175,7 +175,7 @@ final class AntigravityController: ObservableObject {
             guard let self else { return }
             switch result {
             case .success(let response) where response.ok == true:
-                self.loadStatus(message: success)
+                self.loadStatus(message: success, silent: true)
             case .success(let response):
                 self.finishWithError(response.error ?? L10n.operationFailed)
             case .failure(let error):
@@ -364,18 +364,9 @@ struct AntigravityPanelView: View {
     @ViewBuilder
     private var content: some View {
         if let profiles = controller.status?.profiles, !profiles.isEmpty {
-            if profiles.count > 4 {
-                ScrollView {
-                    profilesList(profiles)
-                        .padding(.horizontal, 2)
-                        .padding(.vertical, 2)
-                }
-                .frame(height: 350)
-            } else {
-                profilesList(profiles)
-                    .padding(.horizontal, 2)
-                    .padding(.vertical, 2)
-            }
+            profilesList(profiles)
+                .padding(.horizontal, 2)
+                .padding(.vertical, 2)
         } else if controller.isLoading {
             Text(L10n.loading)
                 .foregroundColor(.secondary)

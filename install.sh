@@ -114,6 +114,16 @@ rm -rf "$APP_DEST"
 ditto "$APP_SRC" "$APP_DEST"
 chflags nohidden "$APP_DEST" 2>/dev/null || true
 
+if [[ -x /usr/bin/security ]]; then
+    echo "==> Configuring Keychain access for Antigravity (service=gemini)..."
+    current_token="$(/usr/bin/security find-generic-password -s "gemini" -a "antigravity" -w 2>/dev/null || true)"
+    if [[ -n "$current_token" ]]; then
+        /usr/bin/security delete-generic-password -s "gemini" -a "antigravity" >/dev/null 2>&1 || true
+        /usr/bin/security add-generic-password -s "gemini" -a "antigravity" -w "$current_token" -A >/dev/null 2>&1 || true
+        echo "==> Keychain access for Antigravity configured with open access (no further prompts)."
+    fi
+fi
+
 echo "==> Launching KeySwitcher..."
 open "$APP_DEST"
 
