@@ -192,9 +192,7 @@ final class AntigravityController: ObservableObject {
         engine.run(args, as: AntigravityResponse.self) { [weak self] result in
             guard let self else { return }
             self.lastRefreshTime = Date()
-            if !silent {
-                self.isLoading = false
-            }
+            self.isLoading = false
             switch result {
             case .success(let response) where response.ok == true:
                 self.status = response
