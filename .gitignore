@@ -17,6 +17,7 @@ runtime/
 
 # IDE / Agent configs
 .omp/
+.claude/
 .vscode/
 .idea/
 
