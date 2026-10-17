@@ -16,10 +16,11 @@ PROJECT_ENDPOINTS = (
     "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
     "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:loadCodeAssist",
 )
+# Production first: the daily (staging) hosts omit the Gemini group and lag behind real usage.
 QUOTA_ENDPOINTS = (
+    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
     "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary",
     "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
-    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
 )
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 OAUTH_CLIENT_RE = rb"[0-9]{6,}-[A-Za-z0-9_-]+[.]apps[.]googleusercontent[.]com"
