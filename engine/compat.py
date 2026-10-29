@@ -88,8 +88,18 @@ def official_auth_binaries():
     )
 
 
-def antigravity_user_agent(version="2.3.1"):
-    return "antigravity/%s %s" % (version, USER_AGENT_PLATFORM)
+def antigravity_version():
+    # The quota API drops the Gemini group for old client versions, so report the installed one.
+    try:
+        import plistlib
+        with open(antigravity_shared_app() / "Contents" / "Info.plist", "rb") as handle:
+            return plistlib.load(handle)["CFBundleShortVersionString"]
+    except Exception:
+        return "2.28.1"
+
+
+def antigravity_user_agent(version=None):
+    return "antigravity/%s %s" % (version or antigravity_version(), USER_AGENT_PLATFORM)
 
 
 def codex_log_dir():

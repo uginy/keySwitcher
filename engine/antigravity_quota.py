@@ -399,7 +399,7 @@ def normalize_quota_groups(groups):
     return result
 
 
-def fetch_quota(access_token, refresh_token=None, version="2.3.1"):
+def fetch_quota(access_token, refresh_token=None, version=None):
     user_agent = compat.antigravity_user_agent(version)
     try:
         return _fetch_quota_with_token(access_token, user_agent)
