@@ -16,7 +16,8 @@ PROJECT_ENDPOINTS = (
     "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
     "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:loadCodeAssist",
 )
-# Production first: the daily (staging) hosts omit the Gemini group and lag behind real usage.
+# Hosts disagree and flip over time: production has returned an all-unused placeholder,
+# daily has dropped the Gemini group. We query all and keep the highest usage per window.
 QUOTA_ENDPOINTS = (
     "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
     "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary",
@@ -413,11 +414,15 @@ def fetch_quota(access_token, refresh_token=None, version=None):
 def _fetch_quota_with_token(access_token, user_agent):
     project, plan = _load_code_assist(access_token, user_agent)
     body = {"project": project} if project else {}
+    groups = []
     last_error = None
     for endpoint in QUOTA_ENDPOINTS:
         try:
-            payload = _post_json(endpoint, access_token, body, user_agent)
-            return normalize_quota_groups(payload.get("groups")), plan
+            groups += _post_json(endpoint, access_token, body, user_agent).get("groups") or []
         except (OSError, ValueError, urllib.error.HTTPError) as exc:
             last_error = exc
-    raise RuntimeError("Antigravity quota request failed") from last_error
+    try:
+        # normalize_quota_groups keeps the highest used_percent per window across all hosts.
+        return normalize_quota_groups(groups), plan
+    except ValueError as exc:
+        raise RuntimeError("Antigravity quota request failed") from (last_error or exc)

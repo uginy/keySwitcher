@@ -236,6 +236,31 @@ def main():
         assert groups["gemini"]["secondary"]["used_percent"] == 50
         assert groups["third_party"]["primary"]["window_minutes"] == 300
 
+        # One host returns an all-unused placeholder, another the real usage: real usage wins.
+        def host_payload(remaining):
+            return {"groups": [{"displayName": "Gemini Models", "buckets": [
+                {"bucketId": "gemini-weekly", "window": "weekly", "remainingFraction": remaining},
+                {"bucketId": "gemini-5h", "window": "5h", "remainingFraction": remaining},
+            ]}]}
+        payloads = iter([host_payload(1), host_payload(0.8), OSError("down")])
+
+        def fake_post(url, *args):
+            if url in antigravity_quota.PROJECT_ENDPOINTS:
+                return {"cloudaicompanionProject": "p"}
+            item = next(payloads)
+            if isinstance(item, Exception):
+                raise item
+            return item
+        original_post = antigravity_quota._post_json
+        antigravity_quota._post_json = fake_post
+        try:
+            merged, _ = antigravity_quota._fetch_quota_with_token("t", "ua")
+        finally:
+            antigravity_quota._post_json = original_post
+        assert merged["gemini"]["primary"]["used_percent"] == 20
+        assert merged["gemini"]["secondary"]["used_percent"] == 20
+        assert merged["third_party"]["ok"] is False
+
         ide_output, ide_capture = run_engine(env, "capture", "ide")
         cli_output, cli_capture = run_engine(env, "capture", "cli")
         assert ide_capture["ok"] and ide_capture["profile"]["email"] == "ide@example.com"
